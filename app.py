@@ -1,3 +1,5 @@
+import os
+os.environ['STREAMLIT_SERVER_MAX_UPLOAD_SIZE'] = '200'  # 200 MB
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,6 +13,8 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 import warnings
 warnings.filterwarnings("ignore")
+
+
 
 # Set page config
 st.set_page_config(
