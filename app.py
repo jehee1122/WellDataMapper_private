@@ -1589,22 +1589,41 @@ if st.session_state.production_data is not None:
                 with subtab6:
                     st.subheader("📈 EUR Error Distribution Analysis")
                     
-                    # Calculate relative errors for all wells
+                    # Calculate actual cumulative production and compare with EUR predictions
                     error_data = []
+                    
+                    # Get actual cumulative production for each well from production data
                     for idx, row in decline_df.iterrows():
-                        if pd.notna(row['EUR_BOE']) and pd.notna(row['EUR_Actual']) and row['EUR_Actual'] > 0:
-                            abs_error = abs(row['EUR_BOE'] - row['EUR_Actual'])
-                            rel_error_pct = (abs_error / row['EUR_Actual']) * 100
+                        if pd.notna(row['EUR_BOE']) and row['EUR_BOE'] > 0:
+                            api_uwi = row['API_UWI']
                             
-                            well_name = row.get('WellName', row['API_UWI'])
-                            error_data.append({
-                                'WellName': well_name,
-                                'API_UWI': row['API_UWI'],
-                                'EUR_Predicted': row['EUR_BOE'],
-                                'EUR_Actual': row['EUR_Actual'],
-                                'Abs_Error': abs_error,
-                                'Rel_Error(%)': rel_error_pct
-                            })
+                            # Find actual cumulative production for this well
+                            well_prod_data = st.session_state.processed_data[
+                                st.session_state.processed_data['API_UWI'] == api_uwi
+                            ]
+                            
+                            if len(well_prod_data) > 0:
+                                # Calculate actual cumulative production
+                                if 'CumProd_BOE' in well_prod_data.columns:
+                                    actual_eur = well_prod_data['CumProd_BOE'].max()
+                                elif 'Prod_BOE' in well_prod_data.columns:
+                                    actual_eur = well_prod_data['Prod_BOE'].sum()
+                                else:
+                                    continue  # Skip if no production data available
+                                
+                                if actual_eur > 0:
+                                    abs_error = abs(row['EUR_BOE'] - actual_eur)
+                                    rel_error_pct = (abs_error / actual_eur) * 100
+                                    
+                                    well_name = row.get('WellName', api_uwi)
+                                    error_data.append({
+                                        'WellName': well_name,
+                                        'API_UWI': api_uwi,
+                                        'EUR_Predicted': row['EUR_BOE'],
+                                        'EUR_Actual': actual_eur,
+                                        'Abs_Error': abs_error,
+                                        'Rel_Error(%)': rel_error_pct
+                                    })
                     
                     if error_data:
                         error_df = pd.DataFrame(error_data)
