@@ -80,11 +80,14 @@ def compute_eur(model, qi, D, b=None, t_end=None):
             return np.nan
         return (qi / ((1 - b) * D)) * (1 - base ** (1 - 1 / b))
 
-def fit_decline_models(production_df):
-    """Fit decline curve models and return best models for each well"""
+def fit_decline_models(production_df, r2_threshold=0.8):
+    """Fit decline curve models and return best models for each well with R² filtering"""
     results = []
     
-    for api, group in production_df.groupby('API_UWI'):
+    # Determine which ID column to use
+    id_column = 'WellName' if 'WellName' in production_df.columns else 'API_UWI'
+    
+    for well_id, group in production_df.groupby(id_column):
         group = group.sort_values('ProducingMonth')
         if len(group) < 6:
             continue
@@ -124,10 +127,18 @@ def fit_decline_models(production_df):
                     b = np.nan
                     eur = compute_eur(model_name, qi, D, t_end=t_end)
                 
-                if r2 > best_r2 and eur > 0:
+                # Only consider models that meet R² threshold
+                if r2 > best_r2 and eur > 0 and r2 >= r2_threshold:
                     best_r2 = r2
+                    
+                    # Get well name and API for display
+                    well_name = well_id
+                    api_uwi = group['API_UWI'].iloc[0] if 'API_UWI' in group.columns else well_id
+                    
                     best_model = {
-                        'API_UWI': api,
+                        'WellName': well_name,
+                        'API_UWI': api_uwi,
+                        'well_id': well_id,  # Keep original ID for grouping
                         'model': model_name,
                         'qi': qi,
                         'D': D,
@@ -455,8 +466,10 @@ header_file = st.sidebar.file_uploader(
     key="header_upload"
 )
 
-# Outlier detection settings
+# Analysis settings
 st.sidebar.header("⚙️ Analysis Settings")
+
+# Outlier detection settings
 outlier_sensitivity = st.sidebar.slider(
     "Outlier Detection Sensitivity",
     min_value=1.0,
@@ -470,6 +483,22 @@ st.sidebar.markdown("**Sensitivity Guide:**")
 st.sidebar.markdown("• 1.0-1.5: Strict (more outliers)")
 st.sidebar.markdown("• 1.5-2.0: Standard")
 st.sidebar.markdown("• 2.0-3.0: Lenient (fewer outliers)")
+
+# R² score filter for decline curve analysis
+st.sidebar.header("📉 Decline Curve Filters")
+r2_threshold = st.sidebar.number_input(
+    "Minimum R² Score",
+    min_value=0.0,
+    max_value=1.0,
+    value=0.8,
+    step=0.05,
+    help="Only include wells with R² score above this threshold"
+)
+
+st.sidebar.markdown(f"**Current R² Filter: {r2_threshold:.2f}**")
+st.sidebar.markdown("• 0.8+: High quality fits")
+st.sidebar.markdown("• 0.6+: Moderate quality fits")
+st.sidebar.markdown("• 0.4+: Lower quality fits")
 
 # Process uploaded files
 if production_file is not None:
@@ -755,18 +784,24 @@ if st.session_state.production_data is not None:
         with tab5:
             st.header("📉 Decline Curve Analysis & EUR Predictions")
             
+            # Display current filter settings
+            st.info(f"**Analysis Filters:** R² ≥ {r2_threshold:.2f} | Minimum 6 months of data")
+            
             # Fit decline models button
             if st.button("🔬 Run Decline Curve Analysis", type="primary"):
                 with st.spinner("Fitting decline curve models..."):
                     try:
-                        # Fit decline models
-                        decline_results = fit_decline_models(st.session_state.processed_data)
+                        # Fit decline models with R² threshold
+                        decline_results = fit_decline_models(st.session_state.processed_data, r2_threshold=r2_threshold)
                         st.session_state.decline_results = decline_results
+                        st.session_state.r2_threshold_used = r2_threshold
                         
                         if len(decline_results) > 0:
-                            st.success(f"✅ Successfully analyzed {len(decline_results)} wells")
+                            st.success(f"✅ Successfully analyzed {len(decline_results)} wells with R² ≥ {r2_threshold:.2f}")
+                            st.info(f"📊 Found {len(decline_results)} wells meeting quality criteria")
                         else:
-                            st.warning("⚠️ No wells met the criteria for decline analysis (minimum 6 months of data)")
+                            st.warning(f"⚠️ No wells met the criteria (R² ≥ {r2_threshold:.2f}, minimum 6 months of data)")
+                            st.info("💡 Try lowering the R² threshold in the sidebar")
                     except Exception as e:
                         st.error(f"❌ Error in decline analysis: {str(e)}")
             
@@ -801,9 +836,21 @@ if st.session_state.production_data is not None:
                     top_20_wells['3_Month_Prediction_BOE'] = predictions
                     
                     # Display table with well names and predictions
-                    display_cols = ['API_UWI', 'model', 'EUR_BOE', '3_Month_Prediction_BOE', 'R2', 'MAE', 'RMSE']
-                    top_20_display = top_20_wells[display_cols].copy()
-                    top_20_display.columns = ['Well Name', 'Best Model', 'EUR (BOE)', '3-Month Forecast (BOE)', 'R²', 'MAE', 'RMSE']
+                    display_cols = ['WellName', 'API_UWI', 'model', 'EUR_BOE', '3_Month_Prediction_BOE', 'R2', 'MAE', 'RMSE']
+                    # Use available columns
+                    available_cols = [col for col in display_cols if col in top_20_wells.columns]
+                    if 'WellName' not in available_cols:
+                        available_cols = ['API_UWI'] + [col for col in available_cols if col != 'API_UWI']
+                    
+                    top_20_display = top_20_wells[available_cols].copy()
+                    
+                    # Create proper column names
+                    if 'WellName' in available_cols:
+                        column_names = ['Well Name', 'Well ID', 'Best Model', 'EUR (BOE)', '3-Month Forecast (BOE)', 'R²', 'MAE', 'RMSE']
+                    else:
+                        column_names = ['Well ID', 'Best Model', 'EUR (BOE)', '3-Month Forecast (BOE)', 'R²', 'MAE', 'RMSE']
+                    
+                    top_20_display.columns = column_names[:len(available_cols)]
                     
                     # Format numbers
                     top_20_display['EUR (BOE)'] = top_20_display['EUR (BOE)'].round(0).astype(int)
@@ -816,15 +863,44 @@ if st.session_state.production_data is not None:
                     
                     # Well selection for detailed view
                     st.subheader("📈 Click on a Well for Detailed Decline Curve")
-                    selected_well = st.selectbox(
-                        "Select a well to view its decline curve:",
-                        options=top_20_wells['API_UWI'].tolist(),
-                        key="top20_well_selector"
-                    )
                     
-                    if selected_well:
-                        well_data = top_20_wells[top_20_wells['API_UWI'] == selected_well].iloc[0]
+                    # Create well selection options with proper names
+                    if 'WellName' in top_20_wells.columns:
+                        well_options = []
+                        for idx, row in top_20_wells.iterrows():
+                            well_name = row['WellName']
+                            well_id = row.get('API_UWI', row.get('well_id', ''))
+                            well_options.append(f"{well_name} ({well_id})")
                         
+                        selected_well_option = st.selectbox(
+                            "Select a well to view its decline curve:",
+                            options=well_options,
+                            key="top20_well_selector"
+                        )
+                        
+                        if selected_well_option:
+                            # Extract well name from selection
+                            selected_well_name = selected_well_option.split(' (')[0]
+                            well_data = top_20_wells[top_20_wells['WellName'] == selected_well_name].iloc[0]
+                    else:
+                        selected_well = st.selectbox(
+                            "Select a well to view its decline curve:",
+                            options=top_20_wells['API_UWI'].tolist(),
+                            key="top20_well_selector"
+                        )
+                        
+                        if selected_well:
+                            well_data = top_20_wells[top_20_wells['API_UWI'] == selected_well].iloc[0]
+                    
+                    # Check if a well was selected and display analysis
+                    well_data = None
+                    if 'WellName' in top_20_wells.columns and 'selected_well_option' in locals() and selected_well_option:
+                        selected_well_name = selected_well_option.split(' (')[0]
+                        well_data = top_20_wells[top_20_wells['WellName'] == selected_well_name].iloc[0]
+                    elif 'selected_well' in locals() and selected_well:
+                        well_data = top_20_wells[top_20_wells['API_UWI'] == selected_well].iloc[0]
+                    
+                    if well_data is not None:
                         # Create decline curve plot
                         fig = go.Figure()
                         
@@ -859,8 +935,16 @@ if st.session_state.production_data is not None:
                         except:
                             pass
                         
+                        # Create title with proper well identification
+                        if 'WellName' in well_data and pd.notna(well_data['WellName']):
+                            well_title = f"Decline Curve Analysis - {well_data['WellName']}"
+                            if 'API_UWI' in well_data and pd.notna(well_data['API_UWI']):
+                                well_title += f" ({well_data['API_UWI']})"
+                        else:
+                            well_title = f"Decline Curve Analysis - {well_data['API_UWI']}"
+                        
                         fig.update_layout(
-                            title=f"Decline Curve Analysis - {selected_well}",
+                            title=well_title,
                             xaxis_title="Time (Months)",
                             yaxis_title="Production Rate (BOE/month)",
                             height=500
@@ -978,11 +1062,26 @@ if st.session_state.production_data is not None:
                                 
                                 # Well selector for EUR graph
                                 st.subheader("📈 Click on a Well for EUR Graph")
-                                selected_map_well = st.selectbox(
-                                    "Select a well to view its EUR analysis:",
-                                    options=top_10_wells['API_UWI'].tolist(),
-                                    key="map_well_selector"
-                                )
+                                
+                                if 'WellName' in top_10_wells.columns:
+                                    map_well_options = []
+                                    for idx, row in top_10_wells.iterrows():
+                                        well_name = row['WellName']
+                                        well_id = row.get('API_UWI', row.get('well_id', ''))
+                                        map_well_options.append(f"{well_name} ({well_id})")
+                                    
+                                    selected_map_well_option = st.selectbox(
+                                        "Select a well to view its EUR analysis:",
+                                        options=map_well_options,
+                                        key="map_well_selector"
+                                    )
+                                    selected_map_well = selected_map_well_option.split(' (')[0] if selected_map_well_option else None
+                                else:
+                                    selected_map_well = st.selectbox(
+                                        "Select a well to view its EUR analysis:",
+                                        options=top_10_wells['API_UWI'].tolist(),
+                                        key="map_well_selector"
+                                    )
                                 
                                 if selected_map_well:
                                     well_eur_data = top_10_wells[top_10_wells['API_UWI'] == selected_map_well].iloc[0]
