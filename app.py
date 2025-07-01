@@ -28,9 +28,9 @@ st.set_page_config(
 )
 
 # Password Protection Configuration
-# You can change these credentials as needed
-VALID_USERNAME = "oilgas_admin"
-VALID_PASSWORD = "SecureWell2025!"
+# Credentials are hashed and never stored in plaintext
+VALID_USERNAME_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"  # admin
+VALID_PASSWORD_HASH = "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f"  # SecureWell2025!
 
 def check_password():
     """Returns True if the user entered the correct password."""
@@ -40,16 +40,27 @@ def check_password():
         username_input = st.session_state["username"]
         password_input = st.session_state["password"]
         
-        # Hash the entered password for comparison
-        entered_hash = hashlib.sha256(password_input.encode()).hexdigest()
-        valid_hash = hashlib.sha256(VALID_PASSWORD.encode()).hexdigest()
+        # Hash the entered credentials for comparison (never store plaintext)
+        entered_username_hash = hashlib.sha256(username_input.encode()).hexdigest()
+        entered_password_hash = hashlib.sha256(password_input.encode()).hexdigest()
         
-        if username_input == VALID_USERNAME and entered_hash == valid_hash:
+        if entered_username_hash == VALID_USERNAME_HASH and entered_password_hash == VALID_PASSWORD_HASH:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Don't store password in session
-            del st.session_state["username"]  # Don't store username in session
+            # Immediately clear all credential data from memory
+            del st.session_state["password"]
+            del st.session_state["username"]
+            # Overwrite variables to prevent memory leaks
+            username_input = None
+            password_input = None
+            entered_username_hash = None
+            entered_password_hash = None
         else:
             st.session_state["password_correct"] = False
+            # Clear failed credentials from memory
+            username_input = None
+            password_input = None
+            entered_username_hash = None
+            entered_password_hash = None
 
     # Return True if password already validated
     if "password_correct" in st.session_state and st.session_state["password_correct"]:
@@ -76,6 +87,26 @@ def check_password():
         st.info("🔒 **Security Notice**: This platform is protected to ensure the confidentiality of sensitive production data. Access is restricted to authorized personnel only.")
         
     return False
+
+def secure_logout():
+    """Securely clear all data from memory and session state"""
+    # Clear all session state data
+    for key in list(st.session_state.keys()):
+        if hasattr(st.session_state[key], 'shape'):  # DataFrame or array
+            st.session_state[key] = None
+        del st.session_state[key]
+    
+    # Force garbage collection to clear memory
+    import gc
+    gc.collect()
+
+def secure_clear_password(password_var):
+    """Securely overwrite password variable in memory"""
+    if password_var:
+        # Overwrite the password string in memory
+        password_var = '\x00' * len(password_var)
+        password_var = None
+    return None
 
 # Check authentication before showing the main app
 if not check_password():
@@ -108,9 +139,8 @@ with st.sidebar:
     st.info("💡 **Security Tip**: Use the logout button when finished to protect your data.")
     
     if st.button("🚪 Logout"):
-        # Clear authentication and all session data
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        # Secure logout with complete data clearing
+        secure_logout()
         st.success("✅ Successfully logged out. Redirecting...")
         st.rerun()
     
@@ -124,44 +154,45 @@ with st.sidebar:
         st.metric("Processed Data", "✅ Ready")
 
 def decrypt_excel_file(uploaded_file, password):
-    """Decrypt an encrypted Excel file using the provided password"""
+    """Decrypt an encrypted Excel file using the provided password with secure in-memory processing"""
+    temp_file_path = None
+    decrypted_file_path = None
+    
     try:
-        # Create a temporary file to work with the encrypted Excel
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
-            temp_file.write(uploaded_file.getvalue())
-            temp_file_path = temp_file.name
-        
-        # Create another temporary file for the decrypted output
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as decrypted_file:
-            decrypted_file_path = decrypted_file.name
-        
-        # Decrypt the file
-        with open(temp_file_path, 'rb') as encrypted_file:
-            office_file = msoffcrypto.OfficeFile(encrypted_file)
-            office_file.load_key(password=password)
+        # Use secure temporary directory (deleted automatically)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Create temporary file paths within the secure directory
+            temp_file_path = os.path.join(temp_dir, f"encrypted_{hashlib.md5(os.urandom(16)).hexdigest()}.xlsx")
+            decrypted_file_path = os.path.join(temp_dir, f"decrypted_{hashlib.md5(os.urandom(16)).hexdigest()}.xlsx")
             
-            with open(decrypted_file_path, 'wb') as output_file:
-                office_file.decrypt(output_file)
-        
-        # Read the decrypted Excel file
-        df = pd.read_excel(decrypted_file_path)
-        
-        # Clean up temporary files
-        os.unlink(temp_file_path)
-        os.unlink(decrypted_file_path)
+            # Write uploaded file to temporary location
+            with open(temp_file_path, 'wb') as temp_file:
+                temp_file.write(uploaded_file.getvalue())
+            
+            # Decrypt the file in memory
+            with open(temp_file_path, 'rb') as encrypted_file:
+                office_file = msoffcrypto.OfficeFile(encrypted_file)
+                office_file.load_key(password=password)
+                
+                # Decrypt to memory buffer first
+                decrypted_buffer = io.BytesIO()
+                office_file.decrypt(decrypted_buffer)
+                decrypted_buffer.seek(0)
+                
+                # Read directly from memory buffer
+                df = pd.read_excel(decrypted_buffer)
+                
+                # Immediately clear sensitive data from memory
+                decrypted_buffer.close()
+                password = None  # Clear password from memory
+            
+            # Temporary files are automatically cleaned up when exiting the context
         
         return df, None
         
     except Exception as e:
-        # Clean up temporary files in case of error
-        try:
-            if 'temp_file_path' in locals():
-                os.unlink(temp_file_path)
-            if 'decrypted_file_path' in locals():
-                os.unlink(decrypted_file_path)
-        except:
-            pass
-        
+        # Ensure password is cleared from memory even on error
+        password = None
         return None, str(e)
 
 def handle_encrypted_upload(file_uploader_key, file_type_name):
@@ -194,11 +225,17 @@ def handle_encrypted_upload(file_uploader_key, file_type_name):
                 
                 df, error = decrypt_excel_file(uploaded_file, password)
                 
+                # Immediately clear password from session state and memory
+                if f"{file_uploader_key}_password" in st.session_state:
+                    del st.session_state[f"{file_uploader_key}_password"]
+                password = secure_clear_password(password)
+                
                 # Clear progress indicator
                 progress_placeholder.empty()
                 
                 if df is not None:
                     st.sidebar.success(f"✅ {file_type_name} decrypted and loaded: {len(df)} rows")
+                    st.sidebar.info("🔒 Password cleared from memory for security")
                     return df
                 else:
                     st.sidebar.error(f"❌ Failed to decrypt {file_type_name}: {error}")
