@@ -1597,6 +1597,86 @@ if st.session_state.production_data is not None:
                         # Count number of wells in each error range
                         error_distribution = error_df['ErrorRange'].value_counts().sort_index()
                         
+                        # First, create EUR scatter plot with R2 and error rate
+                        st.subheader("📊 EUR Prediction vs Actual Analysis")
+                        
+                        # Calculate overall R² and error rate
+                        from sklearn.metrics import r2_score
+                        overall_r2 = r2_score(error_df['EUR_Actual'], error_df['EUR_Predicted'])
+                        mean_error_rate = error_df['Rel_Error(%)'].mean()
+                        
+                        # Create EUR scatter plot
+                        fig_eur_scatter = go.Figure()
+                        
+                        # Add scatter points
+                        fig_eur_scatter.add_trace(go.Scatter(
+                            x=error_df['EUR_Actual'],
+                            y=error_df['EUR_Predicted'],
+                            mode='markers',
+                            name='Wells',
+                            marker=dict(
+                                size=8,
+                                color=error_df['Rel_Error(%)'],
+                                colorscale='RdYlBu_r',
+                                showscale=True,
+                                colorbar=dict(title="Error Rate (%)")
+                            ),
+                            text=[f"Well: {row['WellName']}<br>Actual: {row['EUR_Actual']:,.0f}<br>Predicted: {row['EUR_Predicted']:,.0f}<br>Error: {row['Rel_Error(%)']:.1f}%" 
+                                  for _, row in error_df.iterrows()],
+                            hovertemplate='%{text}<extra></extra>'
+                        ))
+                        
+                        # Add perfect prediction line (y=x)
+                        min_val = min(error_df['EUR_Actual'].min(), error_df['EUR_Predicted'].min())
+                        max_val = max(error_df['EUR_Actual'].max(), error_df['EUR_Predicted'].max())
+                        
+                        fig_eur_scatter.add_trace(go.Scatter(
+                            x=[min_val, max_val],
+                            y=[min_val, max_val],
+                            mode='lines',
+                            name='Perfect Prediction',
+                            line=dict(color='black', width=2, dash='dash')
+                        ))
+                        
+                        fig_eur_scatter.update_layout(
+                            title=f"EUR Estimation (mboe)<br>R² = {overall_r2:.2f}<br>Error Rate: {mean_error_rate:.2f}%",
+                            xaxis_title="Actual EUR",
+                            yaxis_title="Estimated EUR",
+                            height=500,
+                            showlegend=True
+                        )
+                        
+                        st.plotly_chart(fig_eur_scatter, use_container_width=True)
+                        
+                        # Add error rate histogram below the scatter plot
+                        fig_error_hist = go.Figure()
+                        fig_error_hist.add_trace(go.Histogram(
+                            x=error_df['Rel_Error(%)'],
+                            nbinsx=20,
+                            name='Error Rate Distribution',
+                            marker_color='lightblue',
+                            opacity=0.7
+                        ))
+                        
+                        fig_error_hist.update_layout(
+                            title=f"Error Rate Distribution<br>Mean: {mean_error_rate:.2f}%",
+                            xaxis_title="Error Rate (%)",
+                            yaxis_title="Frequency",
+                            height=300,
+                            showlegend=False
+                        )
+                        
+                        st.plotly_chart(fig_error_hist, use_container_width=True)
+                        
+                        # Display key metrics in columns
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Overall R² Score", f"{overall_r2:.3f}")
+                        with col2:
+                            st.metric("Mean Error Rate", f"{mean_error_rate:.2f}%")
+                        with col3:
+                            st.metric("Total Wells", f"{len(error_df)}")
+                        
                         # Display results
                         st.subheader("Relative Error (%) Distribution:")
                         
