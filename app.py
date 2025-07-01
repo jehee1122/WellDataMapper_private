@@ -441,6 +441,213 @@ def calculate_cumulative_eur_error(model_params):
         'eur_error_pct': eur_error_pct
     }
 
+def calculate_well_performance_metrics(production_df, header_df=None):
+    """Calculate comprehensive well performance metrics for drilling focus"""
+    if production_df is None or production_df.empty:
+        return None
+    
+    # Group by well to calculate metrics
+    well_metrics = []
+    
+    for well_id in production_df['WellId'].unique():
+        well_data = production_df[production_df['WellId'] == well_id].copy()
+        well_data = well_data.sort_values('ProducingMonth')
+        
+        if len(well_data) == 0:
+            continue
+            
+        # Get well name if available
+        well_name = well_data['WellName'].iloc[0] if 'WellName' in well_data.columns else f"Well-{well_id}"
+        
+        # Calculate cumulative production for different time periods
+        well_data['Days'] = (well_data['ProducingMonth'] - well_data['ProducingMonth'].min()).dt.days
+        
+        # Calculate BOE production (prioritize existing BOE column, fallback to calculated)
+        if 'Prod_BOE' in well_data.columns:
+            well_data['BOE_Daily'] = well_data['Prod_BOE']
+        else:
+            # Calculate BOE from gas and liquids if BOE not available
+            gas_col = next((col for col in ['GasProd_MCF', 'Gas_MCF', 'Gas'] if col in well_data.columns), None)
+            liquid_col = next((col for col in ['LiquidsProd_BBL', 'Liquids_BBL', 'Oil_BBL'] if col in well_data.columns), None)
+            
+            if gas_col and liquid_col:
+                well_data['BOE_Daily'] = well_data[liquid_col] + (well_data[gas_col] / 6.0)  # 6 MCF = 1 BOE
+            else:
+                continue
+        
+        # Calculate cumulative production
+        well_data['BOE_Cumulative'] = well_data['BOE_Daily'].cumsum()
+        
+        # Get production metrics at different time intervals
+        metrics = {
+            'WellId': well_id,
+            'WellName': well_name,
+            'Reservoir_Asset': well_data.get('Field', 'Unknown').iloc[0] if 'Field' in well_data.columns else 'Unknown',
+        }
+        
+        # Get lateral length from header data if available
+        if header_df is not None and 'WellId' in header_df.columns:
+            header_row = header_df[header_df['WellId'] == well_id]
+            if not header_row.empty:
+                lateral_col = next((col for col in ['LateralLength', 'Lateral_Length', 'Completed_Length'] if col in header_row.columns), None)
+                if lateral_col:
+                    metrics['Lateral_Length_ft'] = header_row[lateral_col].iloc[0]
+                else:
+                    metrics['Lateral_Length_ft'] = np.nan
+            else:
+                metrics['Lateral_Length_ft'] = np.nan
+        else:
+            metrics['Lateral_Length_ft'] = np.nan
+        
+        # Calculate cumulative production at different time periods
+        for days, label in [(30, '30_Day_Cum_BOE'), (90, '90_Day_Cum_BOE'), 
+                           (180, '180_Day_Cum_BOE'), (365, '365_Day_Cum_BOE')]:
+            period_data = well_data[well_data['Days'] <= days]
+            if not period_data.empty:
+                metrics[label] = period_data['BOE_Cumulative'].iloc[-1]
+            else:
+                metrics[label] = 0
+        
+        # Calculate oil and gas percentages
+        if 'GasProd_MCF' in well_data.columns and 'LiquidsProd_BBL' in well_data.columns:
+            total_gas_boe = well_data['GasProd_MCF'].sum() / 6.0
+            total_liquids_boe = well_data['LiquidsProd_BBL'].sum()
+            total_boe = total_gas_boe + total_liquids_boe
+            
+            if total_boe > 0:
+                metrics['Oil_Percent'] = (total_liquids_boe / total_boe) * 100
+                metrics['Gas_Percent'] = (total_gas_boe / total_boe) * 100
+            else:
+                metrics['Oil_Percent'] = 0
+                metrics['Gas_Percent'] = 0
+        else:
+            metrics['Oil_Percent'] = np.nan
+            metrics['Gas_Percent'] = np.nan
+        
+        # Estimate EUR using simple decline curve
+        if len(well_data) >= 3:
+            try:
+                # Fit simple exponential decline to estimate EUR
+                x_data = well_data['Days'].values
+                y_data = well_data['BOE_Daily'].values
+                
+                # Remove zeros and negative values
+                valid_mask = (y_data > 0) & (x_data >= 0)
+                if np.sum(valid_mask) >= 3:
+                    x_clean = x_data[valid_mask]
+                    y_clean = y_data[valid_mask]
+                    
+                    # Fit exponential decline
+                    try:
+                        popt, _ = curve_fit(lambda t, qi, D: qi * np.exp(-D * t), 
+                                          x_clean, y_clean, 
+                                          p0=[y_clean[0], 0.001],
+                                          maxfev=1000)
+                        qi, D = popt
+                        
+                        # Calculate EUR (integrate to 30 years)
+                        if D > 0:
+                            eur_estimate = qi / D * (1 - np.exp(-D * 365 * 30))
+                            metrics['EUR_P50_BOE'] = eur_estimate
+                            metrics['EUR_P10_BOE'] = eur_estimate * 1.5  # High case
+                            metrics['EUR_P90_BOE'] = eur_estimate * 0.7  # Low case
+                        else:
+                            metrics['EUR_P50_BOE'] = np.nan
+                            metrics['EUR_P10_BOE'] = np.nan
+                            metrics['EUR_P90_BOE'] = np.nan
+                    except:
+                        metrics['EUR_P50_BOE'] = np.nan
+                        metrics['EUR_P10_BOE'] = np.nan
+                        metrics['EUR_P90_BOE'] = np.nan
+                else:
+                    metrics['EUR_P50_BOE'] = np.nan
+                    metrics['EUR_P10_BOE'] = np.nan
+                    metrics['EUR_P90_BOE'] = np.nan
+            except:
+                metrics['EUR_P50_BOE'] = np.nan
+                metrics['EUR_P10_BOE'] = np.nan
+                metrics['EUR_P90_BOE'] = np.nan
+        else:
+            metrics['EUR_P50_BOE'] = np.nan
+            metrics['EUR_P10_BOE'] = np.nan
+            metrics['EUR_P90_BOE'] = np.nan
+        
+        well_metrics.append(metrics)
+    
+    return pd.DataFrame(well_metrics)
+
+def predict_well_performance_forecast(production_df, months_ahead=1):
+    """Predict well performance for next N months for drilling focus"""
+    if production_df is None or production_df.empty:
+        return None
+    
+    forecasts = []
+    
+    for well_id in production_df['WellId'].unique():
+        well_data = production_df[production_df['WellId'] == well_id].copy()
+        well_data = well_data.sort_values('ProducingMonth')
+        
+        if len(well_data) < 3:
+            continue
+            
+        # Get well name
+        well_name = well_data['WellName'].iloc[0] if 'WellName' in well_data.columns else f"Well-{well_id}"
+        
+        # Calculate BOE production
+        if 'Prod_BOE' in well_data.columns:
+            well_data['BOE_Daily'] = well_data['Prod_BOE']
+        else:
+            gas_col = next((col for col in ['GasProd_MCF', 'Gas_MCF'] if col in well_data.columns), None)
+            liquid_col = next((col for col in ['LiquidsProd_BBL', 'Liquids_BBL'] if col in well_data.columns), None)
+            
+            if gas_col and liquid_col:
+                well_data['BOE_Daily'] = well_data[liquid_col] + (well_data[gas_col] / 6.0)
+            else:
+                continue
+        
+        # Calculate days since first production
+        well_data['Days'] = (well_data['ProducingMonth'] - well_data['ProducingMonth'].min()).dt.days
+        
+        # Fit decline curve for prediction
+        try:
+            x_data = well_data['Days'].values
+            y_data = well_data['BOE_Daily'].values
+            
+            # Remove invalid data
+            valid_mask = (y_data > 0) & (x_data >= 0)
+            if np.sum(valid_mask) >= 3:
+                x_clean = x_data[valid_mask]
+                y_clean = y_data[valid_mask]
+                
+                # Fit exponential decline
+                popt, _ = curve_fit(lambda t, qi, D: qi * np.exp(-D * t), 
+                                  x_clean, y_clean, 
+                                  p0=[y_clean[0], 0.001],
+                                  maxfev=1000)
+                qi, D = popt
+                
+                # Predict future months
+                last_day = x_data[-1]
+                future_days = last_day + (months_ahead * 30)  # Approximate days per month
+                
+                predicted_rate = qi * np.exp(-D * future_days)
+                predicted_monthly = predicted_rate * 30  # Monthly production
+                
+                forecasts.append({
+                    'WellId': well_id,
+                    'WellName': well_name,
+                    'Current_Rate_BOE_Day': y_data[-1],
+                    'Predicted_Rate_BOE_Day': predicted_rate,
+                    'Predicted_Monthly_BOE': predicted_monthly,
+                    'Months_Ahead': months_ahead,
+                    'Decline_Rate': D,
+                    'Initial_Rate': qi
+                })
+        except:
+            continue
+    
+    return pd.DataFrame(forecasts)
+
 def process_production_data(df):
     """Process production data with cleaning and feature engineering"""
     df_processed = df.copy()
@@ -844,7 +1051,7 @@ if st.session_state.production_data is not None:
         )
         
         # Create tabs for different views
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Overview", "🗺️ Interactive Map", "📈 Well Analysis", "📋 Data Quality", "📉 Decline Curve Analysis"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 Data Overview", "🗺️ Interactive Map", "📈 Well Analysis", "📋 Data Quality", "📉 Decline Curve Analysis", "🎯 Drilling Focus"])
         
         with tab1:
             st.header("📊 Data Overview")
@@ -2490,6 +2697,284 @@ if st.session_state.production_data is not None:
                         st.warning("Unable to calculate error distribution - missing EUR actual or predicted values")
             else:
                 st.info("🔬 Click 'Run Decline Curve Analysis' to start analyzing well performance and EUR predictions")
+
+        with tab6:
+            st.header("🎯 Drilling Focus - Well Performance Analysis")
+            
+            # Month selection for forecasting
+            col1, col2 = st.columns(2)
+            with col1:
+                forecast_months = st.selectbox(
+                    "📅 Forecast Period for Production Planning",
+                    [1, 3, 6, 12],
+                    index=1,
+                    help="Select how many months ahead to forecast production"
+                )
+            
+            with col2:
+                ranking_metric = st.selectbox(
+                    "📊 Ranking Metric",
+                    ["EUR_P10_BOE", "365_Day_Cum_BOE", "180_Day_Cum_BOE", "30_Day_Cum_BOE"],
+                    index=0,
+                    help="Choose the metric for ranking top performing wells"
+                )
+            
+            if st.button("🔬 Calculate Well Performance Metrics", type="primary"):
+                with st.spinner("Calculating comprehensive well performance metrics..."):
+                    try:
+                        # Calculate performance metrics
+                        performance_metrics = calculate_well_performance_metrics(
+                            st.session_state.processed_data, 
+                            st.session_state.header_data
+                        )
+                        
+                        if performance_metrics is not None and len(performance_metrics) > 0:
+                            st.session_state.performance_metrics = performance_metrics
+                            st.success(f"✅ Analyzed {len(performance_metrics)} wells successfully")
+                        else:
+                            st.error("❌ No wells could be analyzed. Check your data format.")
+                            
+                        # Calculate forecasts
+                        forecast_data = predict_well_performance_forecast(
+                            st.session_state.processed_data, 
+                            months_ahead=forecast_months
+                        )
+                        
+                        if forecast_data is not None and len(forecast_data) > 0:
+                            st.session_state.forecast_data = forecast_data
+                            st.success(f"✅ Generated {forecast_months}-month forecasts for {len(forecast_data)} wells")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error in performance analysis: {str(e)}")
+            
+            # Display results if available
+            if 'performance_metrics' in st.session_state and st.session_state.performance_metrics is not None:
+                metrics_df = st.session_state.performance_metrics
+                
+                # Create subtabs for different views
+                subtab1, subtab2, subtab3 = st.tabs([
+                    "🏆 Top 10 Wells Performance Table",
+                    "🗺️ Interactive Performance Map", 
+                    "📊 Performance Summary Analytics"
+                ])
+                
+                with subtab1:
+                    st.subheader(f"🏆 Top 10 Wells - Next {forecast_months} Month(s) Production Focus")
+                    
+                    # Filter and sort by selected metric
+                    if ranking_metric in metrics_df.columns:
+                        top_wells = metrics_df.nlargest(10, ranking_metric)
+                    else:
+                        top_wells = metrics_df.head(10)
+                    
+                    # Add rankings
+                    top_wells = top_wells.reset_index(drop=True)
+                    top_wells['Rank'] = range(1, len(top_wells) + 1)
+                    
+                    # Format display columns for drilling focus
+                    display_columns = [
+                        'Rank', 'WellName', 'Reservoir_Asset', 'Lateral_Length_ft',
+                        '30_Day_Cum_BOE', '90_Day_Cum_BOE', '180_Day_Cum_BOE', '365_Day_Cum_BOE',
+                        'EUR_P10_BOE', 'EUR_P90_BOE', 'Oil_Percent', 'Gas_Percent'
+                    ]
+                    
+                    # Select only available columns
+                    available_columns = [col for col in display_columns if col in top_wells.columns]
+                    display_df = top_wells[available_columns].copy()
+                    
+                    # Format numerical columns
+                    numeric_columns = ['Lateral_Length_ft', '30_Day_Cum_BOE', '90_Day_Cum_BOE', 
+                                     '180_Day_Cum_BOE', '365_Day_Cum_BOE', 'EUR_P10_BOE', 'EUR_P90_BOE']
+                    
+                    for col in numeric_columns:
+                        if col in display_df.columns:
+                            display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "N/A")
+                    
+                    # Format percentage columns
+                    for col in ['Oil_Percent', 'Gas_Percent']:
+                        if col in display_df.columns:
+                            display_df[col] = display_df[col].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "N/A")
+                    
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # Key insights for drilling focus
+                    st.subheader("🎯 Drilling Focus Insights")
+                    
+                    if len(top_wells) > 0:
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            avg_lateral = top_wells['Lateral_Length_ft'].mean() if 'Lateral_Length_ft' in top_wells.columns else 0
+                            st.metric("Avg Lateral Length (Top 10)", f"{avg_lateral:,.0f} ft" if pd.notna(avg_lateral) else "N/A")
+                            
+                            avg_30day = top_wells['30_Day_Cum_BOE'].mean() if '30_Day_Cum_BOE' in top_wells.columns else 0
+                            st.metric("Avg 30-Day IP (Top 10)", f"{avg_30day:,.0f} BOE" if pd.notna(avg_30day) else "N/A")
+                        
+                        with col2:
+                            avg_eur_p10 = top_wells['EUR_P10_BOE'].mean() if 'EUR_P10_BOE' in top_wells.columns else 0
+                            st.metric("Avg EUR P10 (High Case)", f"{avg_eur_p10:,.0f} BOE" if pd.notna(avg_eur_p10) else "N/A")
+                            
+                            avg_oil_pct = top_wells['Oil_Percent'].mean() if 'Oil_Percent' in top_wells.columns else 0
+                            st.metric("Avg Oil Content", f"{avg_oil_pct:.1f}%" if pd.notna(avg_oil_pct) else "N/A")
+                        
+                        with col3:
+                            # Count wells by reservoir
+                            if 'Reservoir_Asset' in top_wells.columns:
+                                primary_reservoir = top_wells['Reservoir_Asset'].mode().iloc[0] if len(top_wells['Reservoir_Asset'].mode()) > 0 else "Unknown"
+                                reservoir_count = top_wells['Reservoir_Asset'].value_counts().iloc[0] if len(top_wells) > 0 else 0
+                                st.metric("Primary Target Reservoir", primary_reservoir)
+                                st.metric("Wells in Top Reservoir", f"{reservoir_count}/10")
+                    
+                    # Download functionality
+                    csv_buffer = io.StringIO()
+                    display_df.to_csv(csv_buffer, index=False)
+                    st.download_button(
+                        label="📥 Download Top 10 Wells Analysis",
+                        data=csv_buffer.getvalue(),
+                        file_name=f"top_10_wells_{forecast_months}month_focus.csv",
+                        mime="text/csv"
+                    )
+                
+                with subtab2:
+                    st.subheader("🗺️ Top 10 Wells Geographic Performance Map")
+                    
+                    if st.session_state.header_data is not None:
+                        # Create map with top wells
+                        if ranking_metric in metrics_df.columns:
+                            top_10_map_wells = metrics_df.nlargest(10, ranking_metric)
+                        else:
+                            top_10_map_wells = metrics_df.head(10)
+                        
+                        # Merge with header data for coordinates
+                        if 'API_UWI' in st.session_state.header_data.columns:
+                            map_data = st.session_state.header_data.merge(
+                                top_10_map_wells[['WellId', 'WellName', ranking_metric]], 
+                                left_on='API_UWI', 
+                                right_on='WellId', 
+                                how='inner'
+                            )
+                        else:
+                            map_data = st.session_state.header_data.merge(
+                                top_10_map_wells[['WellId', 'WellName', ranking_metric]], 
+                                on='WellId', 
+                                how='inner'
+                            )
+                        
+                        if len(map_data) > 0:
+                            # Find coordinate columns
+                            lat_cols = [col for col in map_data.columns if 'lat' in col.lower()]
+                            lon_cols = [col for col in map_data.columns if 'lon' in col.lower()]
+                            
+                            if lat_cols and lon_cols:
+                                lat_col, lon_col = lat_cols[0], lon_cols[0]
+                                
+                                # Create performance map
+                                fig = px.scatter_mapbox(
+                                    map_data,
+                                    lat=lat_col,
+                                    lon=lon_col,
+                                    size=ranking_metric,
+                                    color=ranking_metric,
+                                    hover_name='WellName',
+                                    hover_data={
+                                        ranking_metric: ':,.0f',
+                                        lat_col: False,
+                                        lon_col: False
+                                    },
+                                    color_continuous_scale='Viridis',
+                                    size_max=25,
+                                    zoom=8,
+                                    title=f"Top 10 Wells Performance Map - Ranked by {ranking_metric}"
+                                )
+                                
+                                fig.update_layout(
+                                    mapbox_style="open-street-map",
+                                    height=600,
+                                    margin={"r":0,"t":40,"l":0,"b":0}
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Map summary
+                                st.info(f"📍 Showing {len(map_data)} wells with geographic coordinates. Well size and color indicate {ranking_metric} performance.")
+                            else:
+                                st.warning("No latitude/longitude columns found in header data for mapping")
+                        else:
+                            st.warning("No matching wells found between performance metrics and header data")
+                    else:
+                        st.info("Upload header data with latitude/longitude coordinates to view the performance map")
+                
+                with subtab3:
+                    st.subheader("📊 Well Performance Analytics Summary")
+                    
+                    # Summary statistics table
+                    st.subheader("📈 Asset-Level Performance Summary")
+                    
+                    if 'Reservoir_Asset' in metrics_df.columns:
+                        # Group by reservoir/asset
+                        asset_summary = metrics_df.groupby('Reservoir_Asset').agg({
+                            'WellId': 'count',
+                            'Lateral_Length_ft': 'mean',
+                            '30_Day_Cum_BOE': 'mean',
+                            '90_Day_Cum_BOE': 'mean', 
+                            '180_Day_Cum_BOE': 'mean',
+                            '365_Day_Cum_BOE': 'mean',
+                            'EUR_P10_BOE': 'mean',
+                            'EUR_P90_BOE': 'mean',
+                            'Oil_Percent': 'mean',
+                            'Gas_Percent': 'mean'
+                        }).round(0)
+                        
+                        asset_summary.columns = [
+                            '# Wells Analyzed', 'Avg Lateral Length (ft)', 
+                            '30-Day Cum (BOE)', '90-Day Cum (BOE)', 
+                            '180-Day Cum (BOE)', '365-Day Cum (BOE)',
+                            'EUR - P10 (BOE)', 'EUR - P90 (BOE)',
+                            '% Oil', '% Gas'
+                        ]
+                        
+                        st.dataframe(asset_summary, use_container_width=True)
+                        
+                        # Download asset summary
+                        csv_asset = asset_summary.to_csv()
+                        st.download_button(
+                            label="📊 Download Asset Performance Summary",
+                            data=csv_asset,
+                            file_name="asset_performance_summary.csv",
+                            mime="text/csv"
+                        )
+                    
+                    # Performance distribution charts
+                    st.subheader("📊 Performance Distribution Analysis")
+                    
+                    if 'EUR_P10_BOE' in metrics_df.columns:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # EUR P10 distribution
+                            fig_eur = px.histogram(
+                                metrics_df, 
+                                x='EUR_P10_BOE',
+                                title="EUR P10 Distribution (High Case)",
+                                nbins=20
+                            )
+                            fig_eur.update_layout(height=400)
+                            st.plotly_chart(fig_eur, use_container_width=True)
+                        
+                        with col2:
+                            # Oil percentage distribution
+                            if 'Oil_Percent' in metrics_df.columns:
+                                fig_oil = px.histogram(
+                                    metrics_df.dropna(subset=['Oil_Percent']), 
+                                    x='Oil_Percent',
+                                    title="Oil Content Distribution (%)",
+                                    nbins=15
+                                )
+                                fig_oil.update_layout(height=400)
+                                st.plotly_chart(fig_oil, use_container_width=True)
+            
+            else:
+                st.info("🔬 Click 'Calculate Well Performance Metrics' to analyze well performance for drilling focus")
 
 else:
     # Welcome message
