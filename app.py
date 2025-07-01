@@ -1273,8 +1273,7 @@ if st.session_state.production_data is not None:
                                             color=row['EUR_BOE'],
                                             colorscale='Viridis',
                                             showscale=True if idx == 0 else False,
-                                            colorbar=dict(title="EUR (BOE)") if idx == 0 else None,
-                                            line=dict(width=2, color='white')
+                                            colorbar=dict(title="EUR (BOE)") if idx == 0 else None
                                         ),
                                         text=f"#{rank}",
                                         textposition="middle center",
