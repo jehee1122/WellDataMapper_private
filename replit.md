@@ -79,7 +79,21 @@ The single-file architecture makes deployment straightforward with minimal confi
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Features
+
+### Decline Curve Analysis & EUR Predictions (July 01, 2025)
+- Added comprehensive decline curve modeling using Arps equations (exponential, harmonic, hyperbolic)
+- Implemented EUR (Estimated Ultimate Recovery) calculations with performance metrics (MAE, RMSE, R²)
+- Created Top 20 highest performing wells analysis with 3-month production forecasts
+- Built interactive EUR analysis with distribution plots and model performance comparison
+- Added Top 10 wells geographic map with EUR-based sizing and color coding
+- Implemented individual well analysis with extended 36-month forecasts
+- Integrated clickable well selection for detailed decline curve visualization
+- Added outlier detection with configurable sensitivity controls (1.0-3.0 range)
+- Enhanced outlier analysis showing specific columns with outliers (e.g., "Outlier-Prod_BOE")
+- Implemented outlier reduction strategies and recommendations
+
 ## Changelog
 
 Changelog:
-- July 01, 2025. Initial setup
+- July 01, 2025. Initial setup and decline curve analysis implementation

@@ -5,6 +5,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import io
+from scipy.optimize import curve_fit
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
+import warnings
+warnings.filterwarnings("ignore")
 
 # Set page config
 st.set_page_config(
@@ -46,6 +52,121 @@ def detect_outliers_iqr_custom(df, column, sensitivity=1.5):
     
     outliers = df[(df[column] < lower_bound) | (df[column] > upper_bound)]
     return outliers, lower_bound, upper_bound
+
+# Decline curve modeling functions
+def arps_exponential(t, qi, D):
+    """Arps exponential decline model"""
+    return qi * np.exp(-D * t)
+
+def arps_harmonic(t, qi, D):
+    """Arps harmonic decline model"""
+    return qi / (1 + D * t)
+
+def arps_hyperbolic(t, qi, D, b):
+    """Arps hyperbolic decline model"""
+    return qi / ((1 + b * D * t) ** (1 / b))
+
+def compute_eur(model, qi, D, b=None, t_end=None):
+    """Compute Estimated Ultimate Recovery (EUR)"""
+    if model == 'exponential':
+        return qi / D * (1 - np.exp(-D * t_end))
+    elif model == 'harmonic':
+        return qi * np.log(1 + D * t_end) / D
+    elif model == 'hyperbolic':
+        if b == 1:
+            return qi / D * (1 - np.exp(-D * t_end))
+        base = 1 + b * D * t_end
+        if base <= 0:
+            return np.nan
+        return (qi / ((1 - b) * D)) * (1 - base ** (1 - 1 / b))
+
+def fit_decline_models(production_df):
+    """Fit decline curve models and return best models for each well"""
+    results = []
+    
+    for api, group in production_df.groupby('API_UWI'):
+        group = group.sort_values('ProducingMonth')
+        if len(group) < 6:
+            continue
+            
+        # Calculate time in months
+        group['t_months'] = (group['ProducingMonth'] - group['ProducingMonth'].min()).dt.days / 30.0
+        t = group['t_months'].values
+        q = group['Prod_BOE'].values
+        t_end = t.max()
+        
+        if np.any(q <= 0) or np.all(q == 0) or np.isnan(q).any():
+            continue
+            
+        models_to_try = [
+            ('exponential', arps_exponential, [q[0], 0.01], ([0.01, 1e-5], [1e6, 1])),
+            ('harmonic', arps_harmonic, [q[0], 0.01], ([0.01, 1e-5], [1e6, 1])),
+            ('hyperbolic', arps_hyperbolic, [q[0], 0.01, 0.5], ([0.01, 1e-5, 0.01], [1e6, 1, 2]))
+        ]
+        
+        best_model = None
+        best_r2 = -np.inf
+        
+        for model_name, model_func, p0, bounds in models_to_try:
+            try:
+                popt, _ = curve_fit(model_func, t, q, p0=p0, bounds=bounds, maxfev=20000)
+                q_pred = model_func(t, *popt)
+                r2 = r2_score(q, q_pred)
+                mae = mean_absolute_error(q, q_pred)
+                rmse = np.sqrt(mean_squared_error(q, q_pred))
+                
+                # Calculate EUR
+                if model_name == 'hyperbolic':
+                    qi, D, b = popt
+                    eur = compute_eur(model_name, qi, D, b=b, t_end=t_end)
+                else:
+                    qi, D = popt
+                    b = np.nan
+                    eur = compute_eur(model_name, qi, D, t_end=t_end)
+                
+                if r2 > best_r2 and eur > 0:
+                    best_r2 = r2
+                    best_model = {
+                        'API_UWI': api,
+                        'model': model_name,
+                        'qi': qi,
+                        'D': D,
+                        'b': b,
+                        'EUR_BOE': eur,
+                        'R2': r2,
+                        'MAE': mae,
+                        'RMSE': rmse,
+                        't_data': t,
+                        'q_data': q,
+                        'q_pred': q_pred
+                    }
+            except:
+                continue
+                
+        if best_model:
+            results.append(best_model)
+    
+    return pd.DataFrame(results)
+
+def predict_future_production(model_params, months_ahead=3):
+    """Predict future production for given months"""
+    model = model_params['model']
+    qi = model_params['qi']
+    D = model_params['D']
+    b = model_params['b']
+    
+    # Get current max time
+    t_current = model_params['t_data'].max()
+    t_future = np.arange(t_current + 1, t_current + months_ahead + 1)
+    
+    if model == 'exponential':
+        q_future = arps_exponential(t_future, qi, D)
+    elif model == 'harmonic':
+        q_future = arps_harmonic(t_future, qi, D)
+    elif model == 'hyperbolic':
+        q_future = arps_hyperbolic(t_future, qi, D, b)
+    
+    return t_future, q_future
 
 def process_production_data(df):
     """Process production data with cleaning and feature engineering"""
@@ -389,7 +510,7 @@ if st.session_state.production_data is not None:
         )
         
         # Create tabs for different views
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Overview", "🗺️ Interactive Map", "📈 Well Analysis", "📋 Data Quality"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Data Overview", "🗺️ Interactive Map", "📈 Well Analysis", "📋 Data Quality", "📉 Decline Curve Analysis"])
         
         with tab1:
             st.header("📊 Data Overview")
@@ -432,10 +553,6 @@ if st.session_state.production_data is not None:
                         st.markdown("🟢 **Normal Wells**")
                     with col2:
                         st.markdown("🔴 **Wells with Outliers**")
-                        if outlier_by_column:
-                            st.markdown("*Common outlier columns:*")
-                            for col in list(outlier_by_column.keys())[:2]:
-                                st.markdown(f"• {col}")
                     with col3:
                         st.markdown("🟠 **Wells with Null Values**")
                     with col4:
@@ -634,6 +751,378 @@ if st.session_state.production_data is not None:
             if outlier_summary:
                 outlier_df = pd.DataFrame(outlier_summary)
                 st.dataframe(outlier_df, use_container_width=True)
+        
+        with tab5:
+            st.header("📉 Decline Curve Analysis & EUR Predictions")
+            
+            # Fit decline models button
+            if st.button("🔬 Run Decline Curve Analysis", type="primary"):
+                with st.spinner("Fitting decline curve models..."):
+                    try:
+                        # Fit decline models
+                        decline_results = fit_decline_models(st.session_state.processed_data)
+                        st.session_state.decline_results = decline_results
+                        
+                        if len(decline_results) > 0:
+                            st.success(f"✅ Successfully analyzed {len(decline_results)} wells")
+                        else:
+                            st.warning("⚠️ No wells met the criteria for decline analysis (minimum 6 months of data)")
+                    except Exception as e:
+                        st.error(f"❌ Error in decline analysis: {str(e)}")
+            
+            # Show results if available
+            if 'decline_results' in st.session_state and len(st.session_state.decline_results) > 0:
+                decline_df = st.session_state.decline_results
+                
+                # Create sub-tabs for different analyses
+                subtab1, subtab2, subtab3, subtab4 = st.tabs([
+                    "🏆 Top 20 Wells - 3 Month Forecast", 
+                    "📊 EUR Analysis", 
+                    "🗺️ Top 10 Wells Map", 
+                    "📈 Individual Well Analysis"
+                ])
+                
+                with subtab1:
+                    st.subheader("🏆 Top 20 Highest Performing Wells - Next 3 Months Prediction")
+                    
+                    # Sort by EUR and get top 20
+                    top_20_wells = decline_df.nlargest(20, 'EUR_BOE').copy()
+                    
+                    # Calculate 3-month predictions
+                    predictions = []
+                    for idx, row in top_20_wells.iterrows():
+                        try:
+                            t_future, q_future = predict_future_production(row, months_ahead=3)
+                            total_prediction = np.sum(q_future)
+                            predictions.append(total_prediction)
+                        except:
+                            predictions.append(0)
+                    
+                    top_20_wells['3_Month_Prediction_BOE'] = predictions
+                    
+                    # Display table with well names and predictions
+                    display_cols = ['API_UWI', 'model', 'EUR_BOE', '3_Month_Prediction_BOE', 'R2', 'MAE', 'RMSE']
+                    top_20_display = top_20_wells[display_cols].copy()
+                    top_20_display.columns = ['Well Name', 'Best Model', 'EUR (BOE)', '3-Month Forecast (BOE)', 'R²', 'MAE', 'RMSE']
+                    
+                    # Format numbers
+                    top_20_display['EUR (BOE)'] = top_20_display['EUR (BOE)'].round(0).astype(int)
+                    top_20_display['3-Month Forecast (BOE)'] = top_20_display['3-Month Forecast (BOE)'].round(0).astype(int)
+                    top_20_display['R²'] = top_20_display['R²'].round(3)
+                    top_20_display['MAE'] = top_20_display['MAE'].round(2)
+                    top_20_display['RMSE'] = top_20_display['RMSE'].round(2)
+                    
+                    st.dataframe(top_20_display, use_container_width=True)
+                    
+                    # Well selection for detailed view
+                    st.subheader("📈 Click on a Well for Detailed Decline Curve")
+                    selected_well = st.selectbox(
+                        "Select a well to view its decline curve:",
+                        options=top_20_wells['API_UWI'].tolist(),
+                        key="top20_well_selector"
+                    )
+                    
+                    if selected_well:
+                        well_data = top_20_wells[top_20_wells['API_UWI'] == selected_well].iloc[0]
+                        
+                        # Create decline curve plot
+                        fig = go.Figure()
+                        
+                        # Original data points
+                        fig.add_trace(go.Scatter(
+                            x=well_data['t_data'],
+                            y=well_data['q_data'],
+                            mode='markers',
+                            name='Historical Data',
+                            marker=dict(color='blue', size=8)
+                        ))
+                        
+                        # Fitted curve
+                        fig.add_trace(go.Scatter(
+                            x=well_data['t_data'],
+                            y=well_data['q_pred'],
+                            mode='lines',
+                            name=f'Fitted {well_data["model"].title()} Model',
+                            line=dict(color='red', width=2)
+                        ))
+                        
+                        # Future prediction
+                        try:
+                            t_future, q_future = predict_future_production(well_data, months_ahead=12)
+                            fig.add_trace(go.Scatter(
+                                x=t_future,
+                                y=q_future,
+                                mode='lines',
+                                name='12-Month Forecast',
+                                line=dict(color='green', width=2, dash='dash')
+                            ))
+                        except:
+                            pass
+                        
+                        fig.update_layout(
+                            title=f"Decline Curve Analysis - {selected_well}",
+                            xaxis_title="Time (Months)",
+                            yaxis_title="Production Rate (BOE/month)",
+                            height=500
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Performance metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("EUR (BOE)", f"{well_data['EUR_BOE']:,.0f}")
+                        with col2:
+                            st.metric("R² Score", f"{well_data['R2']:.3f}")
+                        with col3:
+                            st.metric("MAE", f"{well_data['MAE']:.2f}")
+                        with col4:
+                            st.metric("RMSE", f"{well_data['RMSE']:.2f}")
+                
+                with subtab2:
+                    st.subheader("📊 EUR Analysis & Distribution")
+                    
+                    # EUR distribution plot
+                    fig_eur = px.histogram(
+                        decline_df, 
+                        x='EUR_BOE', 
+                        nbins=30,
+                        title="EUR Distribution Across All Wells"
+                    )
+                    fig_eur.update_layout(height=400)
+                    st.plotly_chart(fig_eur, use_container_width=True)
+                    
+                    # EUR statistics
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Average EUR", f"{decline_df['EUR_BOE'].mean():,.0f} BOE")
+                    with col2:
+                        st.metric("Median EUR", f"{decline_df['EUR_BOE'].median():,.0f} BOE")
+                    with col3:
+                        st.metric("Max EUR", f"{decline_df['EUR_BOE'].max():,.0f} BOE")
+                    with col4:
+                        st.metric("Total Wells", len(decline_df))
+                    
+                    # Model performance comparison
+                    st.subheader("Model Performance by Type")
+                    model_performance = decline_df.groupby('model').agg({
+                        'R2': 'mean',
+                        'MAE': 'mean',
+                        'RMSE': 'mean',
+                        'EUR_BOE': 'mean'
+                    }).round(3)
+                    st.dataframe(model_performance, use_container_width=True)
+                
+                with subtab3:
+                    st.subheader("🗺️ Top 10 Wells Geographic Distribution")
+                    
+                    if st.session_state.header_data is not None:
+                        # Get top 10 wells by EUR
+                        top_10_wells = decline_df.nlargest(10, 'EUR_BOE')
+                        
+                        # Merge with header data for coordinates
+                        if 'API_UWI' in st.session_state.header_data.columns:
+                            map_data = st.session_state.header_data.merge(
+                                top_10_wells[['API_UWI', 'EUR_BOE', 'model', 'R2']], 
+                                on='API_UWI', 
+                                how='inner'
+                            )
+                            
+                            # Check for coordinate columns
+                            lat_cols = [col for col in map_data.columns if 'lat' in col.lower()]
+                            lon_cols = [col for col in map_data.columns if 'lon' in col.lower()]
+                            
+                            if lat_cols and lon_cols:
+                                lat_col = lat_cols[0]
+                                lon_col = lon_cols[0]
+                                
+                                # Create map
+                                fig_map = go.Figure()
+                                
+                                fig_map.add_trace(go.Scattermap(
+                                    lat=map_data[lat_col],
+                                    lon=map_data[lon_col],
+                                    mode='markers',
+                                    marker=dict(
+                                        size=map_data['EUR_BOE'] / map_data['EUR_BOE'].max() * 20 + 10,
+                                        color=map_data['EUR_BOE'],
+                                        colorscale='Viridis',
+                                        showscale=True,
+                                        colorbar=dict(title="EUR (BOE)")
+                                    ),
+                                    text=map_data.apply(
+                                        lambda row: f"Well: {row['API_UWI']}<br>"
+                                                   f"EUR: {row['EUR_BOE']:,.0f} BOE<br>"
+                                                   f"Model: {row['model']}<br>"
+                                                   f"R²: {row['R2']:.3f}",
+                                        axis=1
+                                    ),
+                                    hovertemplate='%{text}<extra></extra>'
+                                ))
+                                
+                                # Calculate center
+                                center_lat = map_data[lat_col].mean()
+                                center_lon = map_data[lon_col].mean()
+                                
+                                fig_map.update_layout(
+                                    map=dict(
+                                        style="open-street-map",
+                                        center=dict(lat=center_lat, lon=center_lon),
+                                        zoom=8
+                                    ),
+                                    height=500,
+                                    margin=dict(r=0, t=0, l=0, b=0)
+                                )
+                                
+                                st.plotly_chart(fig_map, use_container_width=True)
+                                
+                                # Well selector for EUR graph
+                                st.subheader("📈 Click on a Well for EUR Graph")
+                                selected_map_well = st.selectbox(
+                                    "Select a well to view its EUR analysis:",
+                                    options=top_10_wells['API_UWI'].tolist(),
+                                    key="map_well_selector"
+                                )
+                                
+                                if selected_map_well:
+                                    well_eur_data = top_10_wells[top_10_wells['API_UWI'] == selected_map_well].iloc[0]
+                                    
+                                    # Create EUR graph with prediction
+                                    fig_eur_pred = go.Figure()
+                                    
+                                    # Historical data
+                                    fig_eur_pred.add_trace(go.Scatter(
+                                        x=well_eur_data['t_data'],
+                                        y=well_eur_data['q_data'],
+                                        mode='markers',
+                                        name='Historical Production',
+                                        marker=dict(color='blue', size=8)
+                                    ))
+                                    
+                                    # Fitted model
+                                    fig_eur_pred.add_trace(go.Scatter(
+                                        x=well_eur_data['t_data'],
+                                        y=well_eur_data['q_pred'],
+                                        mode='lines',
+                                        name='Model Fit',
+                                        line=dict(color='red', width=2)
+                                    ))
+                                    
+                                    # Future prediction
+                                    try:
+                                        t_future, q_future = predict_future_production(well_eur_data, months_ahead=24)
+                                        fig_eur_pred.add_trace(go.Scatter(
+                                            x=t_future,
+                                            y=q_future,
+                                            mode='lines',
+                                            name='24-Month Forecast',
+                                            line=dict(color='green', width=2, dash='dash')
+                                        ))
+                                    except:
+                                        pass
+                                    
+                                    fig_eur_pred.update_layout(
+                                        title=f"EUR Analysis & Prediction - {selected_map_well}",
+                                        xaxis_title="Time (Months)",
+                                        yaxis_title="Production Rate (BOE/month)",
+                                        height=500
+                                    )
+                                    
+                                    st.plotly_chart(fig_eur_pred, use_container_width=True)
+                                    
+                                    # Performance metrics
+                                    col1, col2, col3, col4 = st.columns(4)
+                                    with col1:
+                                        st.metric("EUR (BOE)", f"{well_eur_data['EUR_BOE']:,.0f}")
+                                    with col2:
+                                        st.metric("R² Score", f"{well_eur_data['R2']:.3f}")
+                                    with col3:
+                                        st.metric("MAE", f"{well_eur_data['MAE']:.2f}")
+                                    with col4:
+                                        st.metric("RMSE", f"{well_eur_data['RMSE']:.2f}")
+                            else:
+                                st.error("No latitude/longitude columns found in header data")
+                        else:
+                            st.error("No API_UWI column found in header data for mapping")
+                    else:
+                        st.info("Upload header data with coordinate information to display the map")
+                
+                with subtab4:
+                    st.subheader("📈 Individual Well Analysis")
+                    
+                    # Well selector
+                    selected_analysis_well = st.selectbox(
+                        "Select a well for detailed analysis:",
+                        options=decline_df['API_UWI'].tolist(),
+                        key="analysis_well_selector"
+                    )
+                    
+                    if selected_analysis_well:
+                        well_analysis_data = decline_df[decline_df['API_UWI'] == selected_analysis_well].iloc[0]
+                        
+                        # Create comprehensive analysis plot
+                        fig_analysis = go.Figure()
+                        
+                        # Historical data
+                        fig_analysis.add_trace(go.Scatter(
+                            x=well_analysis_data['t_data'],
+                            y=well_analysis_data['q_data'],
+                            mode='markers',
+                            name='Historical Data',
+                            marker=dict(color='blue', size=8)
+                        ))
+                        
+                        # Model fit
+                        fig_analysis.add_trace(go.Scatter(
+                            x=well_analysis_data['t_data'],
+                            y=well_analysis_data['q_pred'],
+                            mode='lines',
+                            name=f'{well_analysis_data["model"].title()} Model',
+                            line=dict(color='red', width=2)
+                        ))
+                        
+                        # Extended prediction
+                        try:
+                            t_future, q_future = predict_future_production(well_analysis_data, months_ahead=36)
+                            fig_analysis.add_trace(go.Scatter(
+                                x=t_future,
+                                y=q_future,
+                                mode='lines',
+                                name='36-Month Forecast',
+                                line=dict(color='green', width=2, dash='dash')
+                            ))
+                        except:
+                            pass
+                        
+                        fig_analysis.update_layout(
+                            title=f"Comprehensive Analysis - {selected_analysis_well}",
+                            xaxis_title="Time (Months)",
+                            yaxis_title="Production Rate (BOE/month)",
+                            height=500
+                        )
+                        
+                        st.plotly_chart(fig_analysis, use_container_width=True)
+                        
+                        # Detailed metrics
+                        st.subheader("Performance Metrics")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("EUR (BOE)", f"{well_analysis_data['EUR_BOE']:,.0f}")
+                            st.metric("Model Type", well_analysis_data['model'].title())
+                        
+                        with col2:
+                            st.metric("R² Score", f"{well_analysis_data['R2']:.4f}")
+                            st.metric("MAE", f"{well_analysis_data['MAE']:.3f}")
+                        
+                        with col3:
+                            st.metric("RMSE", f"{well_analysis_data['RMSE']:.3f}")
+                            if not pd.isna(well_analysis_data['b']):
+                                st.metric("b parameter", f"{well_analysis_data['b']:.3f}")
+                            else:
+                                st.metric("b parameter", "N/A")
+            else:
+                st.info("🔬 Click 'Run Decline Curve Analysis' to start analyzing well performance and EUR predictions")
 
 else:
     # Welcome message
