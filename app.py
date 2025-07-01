@@ -1132,61 +1132,65 @@ if st.session_state.production_data is not None:
                                     )
                                 
                                 if selected_map_well:
-                                    well_eur_data = top_10_wells[top_10_wells['API_UWI'] == selected_map_well].iloc[0]
-                                    
-                                    # Create EUR graph with prediction
-                                    fig_eur_pred = go.Figure()
-                                    
-                                    # Historical data
-                                    fig_eur_pred.add_trace(go.Scatter(
-                                        x=well_eur_data['t_data'],
-                                        y=well_eur_data['q_data'],
-                                        mode='markers',
-                                        name='Historical Production',
-                                        marker=dict(color='blue', size=8)
-                                    ))
-                                    
-                                    # Fitted model
-                                    fig_eur_pred.add_trace(go.Scatter(
-                                        x=well_eur_data['t_data'],
-                                        y=well_eur_data['q_pred'],
-                                        mode='lines',
-                                        name='Model Fit',
-                                        line=dict(color='red', width=2)
-                                    ))
-                                    
-                                    # Future prediction
-                                    try:
-                                        t_future, q_future = predict_future_production(well_eur_data, months_ahead=24)
+                                    well_matches = top_10_wells[top_10_wells['API_UWI'] == selected_map_well]
+                                    if len(well_matches) > 0:
+                                        well_eur_data = well_matches.iloc[0]
+                                        
+                                        # Create EUR graph with prediction
+                                        fig_eur_pred = go.Figure()
+                                        
+                                        # Historical data
                                         fig_eur_pred.add_trace(go.Scatter(
-                                            x=t_future,
-                                            y=q_future,
-                                            mode='lines',
-                                            name='24-Month Forecast',
-                                            line=dict(color='green', width=2, dash='dash')
+                                            x=well_eur_data['t_data'],
+                                            y=well_eur_data['q_data'],
+                                            mode='markers',
+                                            name='Historical Production',
+                                            marker=dict(color='blue', size=8)
                                         ))
-                                    except:
-                                        pass
-                                    
-                                    fig_eur_pred.update_layout(
-                                        title=f"EUR Analysis & Prediction - {selected_map_well}",
-                                        xaxis_title="Time (Months)",
-                                        yaxis_title="Production Rate (BOE/month)",
-                                        height=500
-                                    )
-                                    
-                                    st.plotly_chart(fig_eur_pred, use_container_width=True)
-                                    
-                                    # Performance metrics
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    with col1:
-                                        st.metric("EUR (BOE)", f"{well_eur_data['EUR_BOE']:,.0f}")
-                                    with col2:
-                                        st.metric("R² Score", f"{well_eur_data['R2']:.3f}")
-                                    with col3:
-                                        st.metric("MAE", f"{well_eur_data['MAE']:.2f}")
-                                    with col4:
-                                        st.metric("RMSE", f"{well_eur_data['RMSE']:.2f}")
+                                        
+                                        # Fitted model
+                                        fig_eur_pred.add_trace(go.Scatter(
+                                            x=well_eur_data['t_data'],
+                                            y=well_eur_data['q_pred'],
+                                            mode='lines',
+                                            name='Model Fit',
+                                            line=dict(color='red', width=2)
+                                        ))
+                                        
+                                        # Future prediction
+                                        try:
+                                            t_future, q_future = predict_future_production(well_eur_data, months_ahead=24)
+                                            fig_eur_pred.add_trace(go.Scatter(
+                                                x=t_future,
+                                                y=q_future,
+                                                mode='lines',
+                                                name='24-Month Forecast',
+                                                line=dict(color='green', width=2, dash='dash')
+                                            ))
+                                        except:
+                                            pass
+                                        
+                                        fig_eur_pred.update_layout(
+                                            title=f"EUR Analysis & Prediction - {selected_map_well}",
+                                            xaxis_title="Time (Months)",
+                                            yaxis_title="Production Rate (BOE/month)",
+                                            height=500
+                                        )
+                                        
+                                        st.plotly_chart(fig_eur_pred, use_container_width=True)
+                                        
+                                        # Performance metrics
+                                        col1, col2, col3, col4 = st.columns(4)
+                                        with col1:
+                                            st.metric("EUR (BOE)", f"{well_eur_data['EUR_BOE']:,.0f}")
+                                        with col2:
+                                            st.metric("R² Score", f"{well_eur_data['R2']:.3f}")
+                                        with col3:
+                                            st.metric("MAE", f"{well_eur_data['MAE']:.2f}")
+                                        with col4:
+                                            st.metric("RMSE", f"{well_eur_data['RMSE']:.2f}")
+                                    else:
+                                        st.error(f"Well {selected_map_well} not found in top 10 wells data")
                             else:
                                 st.error("No latitude/longitude columns found in header data")
                         else:
@@ -1205,69 +1209,73 @@ if st.session_state.production_data is not None:
                     )
                     
                     if selected_analysis_well:
-                        well_analysis_data = decline_df[decline_df['API_UWI'] == selected_analysis_well].iloc[0]
-                        
-                        # Create comprehensive analysis plot
-                        fig_analysis = go.Figure()
-                        
-                        # Historical data
-                        fig_analysis.add_trace(go.Scatter(
-                            x=well_analysis_data['t_data'],
-                            y=well_analysis_data['q_data'],
-                            mode='markers',
-                            name='Historical Data',
-                            marker=dict(color='blue', size=8)
-                        ))
-                        
-                        # Model fit
-                        fig_analysis.add_trace(go.Scatter(
-                            x=well_analysis_data['t_data'],
-                            y=well_analysis_data['q_pred'],
-                            mode='lines',
-                            name=f'{well_analysis_data["model"].title()} Model',
-                            line=dict(color='red', width=2)
-                        ))
-                        
-                        # Extended prediction
-                        try:
-                            t_future, q_future = predict_future_production(well_analysis_data, months_ahead=36)
+                        well_analysis_matches = decline_df[decline_df['API_UWI'] == selected_analysis_well]
+                        if len(well_analysis_matches) > 0:
+                            well_analysis_data = well_analysis_matches.iloc[0]
+                            
+                            # Create comprehensive analysis plot
+                            fig_analysis = go.Figure()
+                            
+                            # Historical data
                             fig_analysis.add_trace(go.Scatter(
-                                x=t_future,
-                                y=q_future,
-                                mode='lines',
-                                name='36-Month Forecast',
-                                line=dict(color='green', width=2, dash='dash')
+                                x=well_analysis_data['t_data'],
+                                y=well_analysis_data['q_data'],
+                                mode='markers',
+                                name='Historical Data',
+                                marker=dict(color='blue', size=8)
                             ))
-                        except:
-                            pass
-                        
-                        fig_analysis.update_layout(
-                            title=f"Comprehensive Analysis - {selected_analysis_well}",
-                            xaxis_title="Time (Months)",
-                            yaxis_title="Production Rate (BOE/month)",
-                            height=500
-                        )
-                        
-                        st.plotly_chart(fig_analysis, use_container_width=True)
-                        
-                        # Detailed metrics
-                        st.subheader("Performance Metrics")
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.metric("EUR (BOE)", f"{well_analysis_data['EUR_BOE']:,.0f}")
-                            st.metric("Model Type", well_analysis_data['model'].title())
-                        
-                        with col2:
-                            st.metric("R² Score", f"{well_analysis_data['R2']:.4f}")
-                            st.metric("MAE", f"{well_analysis_data['MAE']:.3f}")
-                        
-                        with col3:
-                            st.metric("RMSE", f"{well_analysis_data['RMSE']:.3f}")
-                            if not pd.isna(well_analysis_data['b']):
-                                st.metric("b parameter", f"{well_analysis_data['b']:.3f}")
-                            else:
-                                st.metric("b parameter", "N/A")
+                            
+                            # Model fit
+                            fig_analysis.add_trace(go.Scatter(
+                                x=well_analysis_data['t_data'],
+                                y=well_analysis_data['q_pred'],
+                                mode='lines',
+                                name=f'{well_analysis_data["model"].title()} Model',
+                                line=dict(color='red', width=2)
+                            ))
+                            
+                            # Extended prediction
+                            try:
+                                t_future, q_future = predict_future_production(well_analysis_data, months_ahead=36)
+                                fig_analysis.add_trace(go.Scatter(
+                                    x=t_future,
+                                    y=q_future,
+                                    mode='lines',
+                                    name='36-Month Forecast',
+                                    line=dict(color='green', width=2, dash='dash')
+                                ))
+                            except:
+                                pass
+                            
+                            fig_analysis.update_layout(
+                                title=f"Comprehensive Analysis - {selected_analysis_well}",
+                                xaxis_title="Time (Months)",
+                                yaxis_title="Production Rate (BOE/month)",
+                                height=500
+                            )
+                            
+                            st.plotly_chart(fig_analysis, use_container_width=True)
+                            
+                            # Detailed metrics
+                            st.subheader("Performance Metrics")
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("EUR (BOE)", f"{well_analysis_data['EUR_BOE']:,.0f}")
+                                st.metric("Model Type", well_analysis_data['model'].title())
+                            
+                            with col2:
+                                st.metric("R² Score", f"{well_analysis_data['R2']:.4f}")
+                                st.metric("MAE", f"{well_analysis_data['MAE']:.3f}")
+                            
+                            with col3:
+                                st.metric("RMSE", f"{well_analysis_data['RMSE']:.3f}")
+                                if not pd.isna(well_analysis_data['b']):
+                                    st.metric("b parameter", f"{well_analysis_data['b']:.3f}")
+                                else:
+                                    st.metric("b parameter", "N/A")
+                        else:
+                            st.error(f"Well {selected_analysis_well} not found in decline curve data")
                 
                 with subtab5:
                     st.subheader("🔍 Model Validation & Accuracy Analysis")
@@ -1288,7 +1296,9 @@ if st.session_state.production_data is not None:
                         
                         if selected_validation_well_option:
                             selected_validation_well_name = selected_validation_well_option.split(' (')[0]
-                            validation_well_data = decline_df[decline_df['WellName'] == selected_validation_well_name].iloc[0]
+                            validation_well_matches = decline_df[decline_df['WellName'] == selected_validation_well_name]
+                            if len(validation_well_matches) > 0:
+                                validation_well_data = validation_well_matches.iloc[0]
                     else:
                         selected_validation_well = st.selectbox(
                             "Select a well for detailed model validation:",
@@ -1297,7 +1307,9 @@ if st.session_state.production_data is not None:
                         )
                         
                         if selected_validation_well:
-                            validation_well_data = decline_df[decline_df['API_UWI'] == selected_validation_well].iloc[0]
+                            validation_well_matches = decline_df[decline_df['API_UWI'] == selected_validation_well]
+                            if len(validation_well_matches) > 0:
+                                validation_well_data = validation_well_matches.iloc[0]
                     
                     if 'validation_well_data' in locals():
                         # Calculate advanced metrics
