@@ -1,0 +1,78 @@
+# Load production data
+df = pd.read_csv("output_file.csv", parse_dates=['ProducingMonth'])
+
+# Define the hyperbolic decline model
+def hyperbolic_model(t, q_i, D, b):
+    return q_i / (1 + b * D * t)**(1 / b)
+
+# Use numerical integration (summation) to estimate EUR
+def estimate_eur_integral(q_i, D, b, t_end=240):
+    try:
+        if q_i <= 0 or D <= 0 or b <= 0:
+            return np.nan
+        t = np.arange(0, int(t_end))
+        q = hyperbolic_model(t, q_i, D, b)
+        eur = np.sum(q)
+        return eur if np.isfinite(eur) and eur > 0 else np.nan
+    except:
+        return np.nan
+
+# Evaluate only early period
+train_months = 100
+results = []
+
+for well_id in df['WellID'].dropna().unique():
+    df_well = df[df['WellID'] == well_id].copy()
+    df_well = df_well[['ProducingMonth', 'Prod_BOE', 'MonthsSinceStart']].dropna()
+    df_well['Prod_BOE'] = pd.to_numeric(df_well['Prod_BOE'], errors='coerce')
+    df_well = df_well.dropna()
+
+    if len(df_well) < train_months + 3:
+        continue  # skip short wells
+
+    # Training set: early months
+    df_train = df_well[df_well['MonthsSinceStart'] < train_months]
+    df_full = df_well.copy()
+
+    # Decline portion only (after peak)
+    t_all = df_train['MonthsSinceStart'].values
+    q_all = df_train['Prod_BOE'].values
+    decline_start = np.argmax(q_all)
+    t_train = t_all[decline_start:]
+    q_train = q_all[decline_start:]
+
+    # if len(t_train) < 400:
+    #     continue
+
+    try:
+        initial_guess = [q_train[0], 0.1, 0.5]
+        bounds = ([0, 1e-6, 0.01], [1e6, 1.0, 2.0])
+        params, _ = curve_fit(hyperbolic_model, t_train, q_train, p0=initial_guess, bounds=bounds, maxfev=10000)
+        q_i_fit, D_fit, b_fit = params
+
+        # Use numerical integration instead of formula
+        max_month = df_full['MonthsSinceStart'].max()
+        eur_pred = estimate_eur_integral(q_i_fit, D_fit, b_fit, t_end=max_month)
+
+        eur_actual = df_full['Prod_BOE'].sum()
+        abs_error = abs(eur_pred - eur_actual)
+        rel_error = abs_error / eur_actual if eur_actual != 0 else np.nan
+
+        results.append({
+            'WellID': well_id,
+            'q_i': q_i_fit,
+            'D': D_fit,
+            'b': b_fit,
+            'EUR_Predicted': eur_pred,
+            'EUR_Actual': eur_actual,
+            'Abs_Error': abs_error,
+            'Rel_Error(%)': rel_error * 100
+        })
+
+    except Exception:
+        continue
+
+# Export result table
+results_df = pd.DataFrame(results)
+results_df.to_csv("well_eur_with_error.csv", index=False)
+print("Results saved to 'well_eur_with_error.csv'")
