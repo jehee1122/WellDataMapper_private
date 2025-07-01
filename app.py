@@ -179,6 +179,53 @@ def predict_future_production(model_params, months_ahead=3):
     
     return t_future, q_future
 
+def calculate_advanced_metrics(actual, predicted):
+    """Calculate advanced error metrics including MAPE"""
+    mae = mean_absolute_error(actual, predicted)
+    rmse = np.sqrt(mean_squared_error(actual, predicted))
+    r2 = r2_score(actual, predicted)
+    
+    # MAPE (Mean Absolute Percentage Error)
+    mape = np.mean(np.abs((actual - predicted) / np.maximum(actual, 1e-8))) * 100
+    
+    # Bias (systematic over/under prediction)
+    bias = np.mean(predicted - actual)
+    
+    return {
+        'MAE': mae,
+        'RMSE': rmse,
+        'R2': r2,
+        'MAPE': mape,
+        'Bias': bias
+    }
+
+def calculate_residuals(actual, predicted):
+    """Calculate residuals and their statistics"""
+    residuals = actual - predicted
+    
+    # Normalized residuals
+    std_residuals = residuals / np.std(residuals) if np.std(residuals) > 0 else residuals
+    
+    return {
+        'residuals': residuals,
+        'std_residuals': std_residuals,
+        'mean_residual': np.mean(residuals),
+        'std_residual': np.std(residuals)
+    }
+
+def calculate_cumulative_eur_error(model_params):
+    """Calculate EUR prediction accuracy"""
+    actual_eur = np.sum(model_params['q_data'])  # Simple cumulative from data
+    predicted_eur = model_params['EUR_BOE']
+    
+    eur_error_pct = ((predicted_eur - actual_eur) / actual_eur) * 100 if actual_eur > 0 else 0
+    
+    return {
+        'actual_eur': actual_eur,
+        'predicted_eur': predicted_eur,
+        'eur_error_pct': eur_error_pct
+    }
+
 def process_production_data(df):
     """Process production data with cleaning and feature engineering"""
     df_processed = df.copy()
@@ -810,11 +857,12 @@ if st.session_state.production_data is not None:
                 decline_df = st.session_state.decline_results
                 
                 # Create sub-tabs for different analyses
-                subtab1, subtab2, subtab3, subtab4 = st.tabs([
+                subtab1, subtab2, subtab3, subtab4, subtab5 = st.tabs([
                     "🏆 Top 20 Wells - 3 Month Forecast", 
                     "📊 EUR Analysis", 
                     "🗺️ Top 10 Wells Map", 
-                    "📈 Individual Well Analysis"
+                    "📈 Individual Well Analysis",
+                    "🔍 Model Validation & Accuracy"
                 ])
                 
                 with subtab1:
@@ -1220,6 +1268,285 @@ if st.session_state.production_data is not None:
                                 st.metric("b parameter", f"{well_analysis_data['b']:.3f}")
                             else:
                                 st.metric("b parameter", "N/A")
+                
+                with subtab5:
+                    st.subheader("🔍 Model Validation & Accuracy Analysis")
+                    
+                    # Well selector for validation
+                    if 'WellName' in decline_df.columns:
+                        validation_well_options = []
+                        for idx, row in decline_df.iterrows():
+                            well_name = row['WellName']
+                            well_id = row.get('API_UWI', row.get('well_id', ''))
+                            validation_well_options.append(f"{well_name} ({well_id})")
+                        
+                        selected_validation_well_option = st.selectbox(
+                            "Select a well for detailed model validation:",
+                            options=validation_well_options,
+                            key="validation_well_selector"
+                        )
+                        
+                        if selected_validation_well_option:
+                            selected_validation_well_name = selected_validation_well_option.split(' (')[0]
+                            validation_well_data = decline_df[decline_df['WellName'] == selected_validation_well_name].iloc[0]
+                    else:
+                        selected_validation_well = st.selectbox(
+                            "Select a well for detailed model validation:",
+                            options=decline_df['API_UWI'].tolist(),
+                            key="validation_well_selector"
+                        )
+                        
+                        if selected_validation_well:
+                            validation_well_data = decline_df[decline_df['API_UWI'] == selected_validation_well].iloc[0]
+                    
+                    if 'validation_well_data' in locals():
+                        # Calculate advanced metrics
+                        metrics = calculate_advanced_metrics(validation_well_data['q_data'], validation_well_data['q_pred'])
+                        residual_stats = calculate_residuals(validation_well_data['q_data'], validation_well_data['q_pred'])
+                        eur_stats = calculate_cumulative_eur_error(validation_well_data)
+                        
+                        # Display well info
+                        well_title = validation_well_data.get('WellName', validation_well_data['API_UWI'])
+                        st.subheader(f"Model Validation for: {well_title}")
+                        
+                        # Advanced metrics display
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        with col1:
+                            st.metric("MAE", f"{metrics['MAE']:.2f}", help="Mean Absolute Error")
+                        with col2:
+                            st.metric("RMSE", f"{metrics['RMSE']:.2f}", help="Root Mean Square Error")
+                        with col3:
+                            st.metric("MAPE (%)", f"{metrics['MAPE']:.1f}", help="Mean Absolute Percentage Error")
+                        with col4:
+                            st.metric("R² Score", f"{metrics['R2']:.3f}", help="Coefficient of Determination")
+                        with col5:
+                            bias_color = "inverse" if abs(metrics['Bias']) < 10 else "normal"
+                            st.metric("Bias", f"{metrics['Bias']:.2f}", help="Systematic Error (+ = overestimation)")
+                        
+                        # EUR accuracy
+                        st.subheader("EUR Prediction Accuracy")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Actual EUR", f"{eur_stats['actual_eur']:,.0f} BOE")
+                        with col2:
+                            st.metric("Predicted EUR", f"{eur_stats['predicted_eur']:,.0f} BOE")
+                        with col3:
+                            error_color = "inverse" if abs(eur_stats['eur_error_pct']) < 10 else "normal"
+                            st.metric("EUR Error (%)", f"{eur_stats['eur_error_pct']:+.1f}%", help="+ = overestimated, - = underestimated")
+                        
+                        # Create validation plots
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Actual vs Predicted scatter plot
+                            fig_scatter = go.Figure()
+                            
+                            # Perfect prediction line
+                            min_val = min(np.min(validation_well_data['q_data']), np.min(validation_well_data['q_pred']))
+                            max_val = max(np.max(validation_well_data['q_data']), np.max(validation_well_data['q_pred']))
+                            fig_scatter.add_trace(go.Scatter(
+                                x=[min_val, max_val],
+                                y=[min_val, max_val],
+                                mode='lines',
+                                name='Perfect Prediction',
+                                line=dict(color='red', dash='dash')
+                            ))
+                            
+                            # Actual vs predicted points
+                            fig_scatter.add_trace(go.Scatter(
+                                x=validation_well_data['q_data'],
+                                y=validation_well_data['q_pred'],
+                                mode='markers',
+                                name='Data Points',
+                                marker=dict(color='blue', size=8, opacity=0.7)
+                            ))
+                            
+                            fig_scatter.update_layout(
+                                title="Actual vs Predicted Production",
+                                xaxis_title="Actual Production (BOE/month)",
+                                yaxis_title="Predicted Production (BOE/month)",
+                                height=400
+                            )
+                            st.plotly_chart(fig_scatter, use_container_width=True)
+                        
+                        with col2:
+                            # Residual plot
+                            fig_residual = go.Figure()
+                            
+                            # Zero line
+                            fig_residual.add_hline(y=0, line_dash="dash", line_color="red")
+                            
+                            # Residuals vs predicted
+                            fig_residual.add_trace(go.Scatter(
+                                x=validation_well_data['q_pred'],
+                                y=residual_stats['residuals'],
+                                mode='markers',
+                                name='Residuals',
+                                marker=dict(color='green', size=8, opacity=0.7)
+                            ))
+                            
+                            fig_residual.update_layout(
+                                title="Residual Analysis",
+                                xaxis_title="Predicted Production (BOE/month)",
+                                yaxis_title="Residuals (Actual - Predicted)",
+                                height=400
+                            )
+                            st.plotly_chart(fig_residual, use_container_width=True)
+                        
+                        # Time series analysis
+                        st.subheader("Time Series Validation")
+                        fig_timeseries = go.Figure()
+                        
+                        # Actual data
+                        fig_timeseries.add_trace(go.Scatter(
+                            x=validation_well_data['t_data'],
+                            y=validation_well_data['q_data'],
+                            mode='markers+lines',
+                            name='Actual Production',
+                            line=dict(color='blue')
+                        ))
+                        
+                        # Predicted data
+                        fig_timeseries.add_trace(go.Scatter(
+                            x=validation_well_data['t_data'],
+                            y=validation_well_data['q_pred'],
+                            mode='lines',
+                            name='Model Prediction',
+                            line=dict(color='red', width=2)
+                        ))
+                        
+                        # Residuals (secondary y-axis)
+                        fig_timeseries.add_trace(go.Scatter(
+                            x=validation_well_data['t_data'],
+                            y=residual_stats['residuals'],
+                            mode='markers',
+                            name='Residuals',
+                            marker=dict(color='green', size=6),
+                            yaxis='y2'
+                        ))
+                        
+                        fig_timeseries.update_layout(
+                            title="Production Time Series with Residuals",
+                            xaxis_title="Time (Months)",
+                            yaxis_title="Production Rate (BOE/month)",
+                            yaxis2=dict(
+                                title="Residuals",
+                                overlaying='y',
+                                side='right',
+                                showgrid=False
+                            ),
+                            height=500
+                        )
+                        st.plotly_chart(fig_timeseries, use_container_width=True)
+                        
+                        # Model quality assessment
+                        st.subheader("Model Quality Assessment")
+                        
+                        quality_assessment = []
+                        
+                        # R² assessment
+                        if metrics['R2'] >= 0.9:
+                            r2_status = "Excellent"
+                            r2_color = "🟢"
+                        elif metrics['R2'] >= 0.8:
+                            r2_status = "Good"
+                            r2_color = "🟡"
+                        elif metrics['R2'] >= 0.6:
+                            r2_status = "Fair"
+                            r2_color = "🟠"
+                        else:
+                            r2_status = "Poor"
+                            r2_color = "🔴"
+                        
+                        quality_assessment.append(f"{r2_color} **R² Score ({metrics['R2']:.3f})**: {r2_status} model fit")
+                        
+                        # MAPE assessment
+                        if metrics['MAPE'] <= 10:
+                            mape_status = "Excellent"
+                            mape_color = "🟢"
+                        elif metrics['MAPE'] <= 20:
+                            mape_status = "Good"
+                            mape_color = "🟡"
+                        elif metrics['MAPE'] <= 30:
+                            mape_status = "Fair"
+                            mape_color = "🟠"
+                        else:
+                            mape_status = "Poor"
+                            mape_color = "🔴"
+                        
+                        quality_assessment.append(f"{mape_color} **MAPE ({metrics['MAPE']:.1f}%)**: {mape_status} prediction accuracy")
+                        
+                        # EUR error assessment
+                        if abs(eur_stats['eur_error_pct']) <= 10:
+                            eur_status = "Excellent"
+                            eur_color = "🟢"
+                        elif abs(eur_stats['eur_error_pct']) <= 20:
+                            eur_status = "Good"
+                            eur_color = "🟡"
+                        elif abs(eur_stats['eur_error_pct']) <= 30:
+                            eur_status = "Fair"
+                            eur_color = "🟠"
+                        else:
+                            eur_status = "Poor"
+                            eur_color = "🔴"
+                        
+                        quality_assessment.append(f"{eur_color} **EUR Error ({eur_stats['eur_error_pct']:+.1f}%)**: {eur_status} EUR prediction")
+                        
+                        # Display assessment
+                        for assessment in quality_assessment:
+                            st.markdown(assessment)
+                        
+                        # Improvement recommendations
+                        st.subheader("Model Improvement Recommendations")
+                        
+                        recommendations = []
+                        
+                        if metrics['R2'] < 0.8:
+                            recommendations.append("• Consider alternative decline models (exponential vs hyperbolic)")
+                            recommendations.append("• Check for data quality issues or outliers")
+                        
+                        if metrics['MAPE'] > 20:
+                            recommendations.append("• Model shows high percentage errors - consider data preprocessing")
+                            recommendations.append("• Investigate production interruptions or operational changes")
+                        
+                        if abs(metrics['Bias']) > 10:
+                            if metrics['Bias'] > 0:
+                                recommendations.append("• Model systematically overestimates - consider adjusting decline parameters")
+                            else:
+                                recommendations.append("• Model systematically underestimates - review initial production rates")
+                        
+                        if abs(eur_stats['eur_error_pct']) > 20:
+                            recommendations.append("• EUR prediction needs improvement - consider longer historical data")
+                            recommendations.append("• Review economic limit assumptions")
+                        
+                        # Residual pattern analysis
+                        residual_variance = np.var(residual_stats['residuals'])
+                        if residual_variance > np.var(validation_well_data['q_data']) * 0.1:
+                            recommendations.append("• High residual variance suggests model may be missing important patterns")
+                        
+                        if recommendations:
+                            for rec in recommendations:
+                                st.markdown(rec)
+                        else:
+                            st.success("✅ Model shows good performance across all metrics!")
+                        
+                        # Data export option
+                        st.subheader("Export Validation Data")
+                        validation_export_data = pd.DataFrame({
+                            'Time_Months': validation_well_data['t_data'],
+                            'Actual_Production': validation_well_data['q_data'],
+                            'Predicted_Production': validation_well_data['q_pred'],
+                            'Residuals': residual_stats['residuals'],
+                            'Standardized_Residuals': residual_stats['std_residuals']
+                        })
+                        
+                        csv_data = validation_export_data.to_csv(index=False)
+                        st.download_button(
+                            label="📥 Download Validation Data",
+                            data=csv_data,
+                            file_name=f"validation_{well_title.replace(' ', '_')}.csv",
+                            mime="text/csv"
+                        )
             else:
                 st.info("🔬 Click 'Run Decline Curve Analysis' to start analyzing well performance and EUR predictions")
 
