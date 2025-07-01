@@ -1078,10 +1078,13 @@ if st.session_state.production_data is not None:
                         # Get top 10 wells by EUR
                         top_10_wells = decline_df.nlargest(10, 'EUR_BOE')
                         
+                        # Sort wells by EUR amount (highest first) for performance
+                        top_10_wells_sorted = top_10_wells.sort_values('EUR_BOE', ascending=False).reset_index(drop=True)
+                        
                         # Merge with header data for coordinates
                         if 'API_UWI' in st.session_state.header_data.columns:
                             map_data = st.session_state.header_data.merge(
-                                top_10_wells[['API_UWI', 'EUR_BOE', 'model', 'R2']], 
+                                top_10_wells_sorted[['API_UWI', 'EUR_BOE', 'model', 'R2', 'MAE', 'RMSE']], 
                                 on='API_UWI', 
                                 how='inner'
                             )
@@ -1094,29 +1097,42 @@ if st.session_state.production_data is not None:
                                 lat_col = lat_cols[0]
                                 lon_col = lon_cols[0]
                                 
-                                # Create map
+                                # Create enhanced map with well rankings
                                 fig_map = go.Figure()
                                 
-                                fig_map.add_trace(go.Scattermap(
-                                    lat=map_data[lat_col],
-                                    lon=map_data[lon_col],
-                                    mode='markers',
-                                    marker=dict(
-                                        size=map_data['EUR_BOE'] / map_data['EUR_BOE'].max() * 20 + 10,
-                                        color=map_data['EUR_BOE'],
-                                        colorscale='Viridis',
-                                        showscale=True,
-                                        colorbar=dict(title="EUR (BOE)")
-                                    ),
-                                    text=map_data.apply(
-                                        lambda row: f"Well: {row['API_UWI']}<br>"
-                                                   f"EUR: {row['EUR_BOE']:,.0f} BOE<br>"
-                                                   f"Model: {row['model']}<br>"
-                                                   f"R²: {row['R2']:.3f}",
-                                        axis=1
-                                    ),
-                                    hovertemplate='%{text}<extra></extra>'
-                                ))
+                                # Add each well individually with ranking
+                                for idx, row in map_data.iterrows():
+                                    well_name = row.get('WellName', row['API_UWI'])
+                                    rank = idx + 1
+                                    
+                                    fig_map.add_trace(go.Scattermap(
+                                        lat=[row[lat_col]],
+                                        lon=[row[lon_col]],
+                                        mode='markers+text',
+                                        marker=dict(
+                                            size=row['EUR_BOE'] / map_data['EUR_BOE'].max() * 25 + 15,
+                                            color=row['EUR_BOE'],
+                                            colorscale='Viridis',
+                                            showscale=True if idx == 0 else False,
+                                            colorbar=dict(title="EUR (BOE)") if idx == 0 else None,
+                                            line=dict(width=2, color='white')
+                                        ),
+                                        text=f"#{rank}",
+                                        textposition="middle center",
+                                        textfont=dict(size=10, color='white'),
+                                        hovertemplate=(
+                                            f"<b>Rank #{rank}: {well_name}</b><br>" +
+                                            f"API: {row['API_UWI']}<br>" +
+                                            f"EUR: {row['EUR_BOE']:,.0f} BOE<br>" +
+                                            f"Model: {row['model']}<br>" +
+                                            f"R²: {row['R2']:.3f}<br>" +
+                                            f"MAE: {row['MAE']:.2f}<br>" +
+                                            f"RMSE: {row['RMSE']:.2f}<br>" +
+                                            "<extra></extra>"
+                                        ),
+                                        name=f"#{rank} {well_name}",
+                                        showlegend=False
+                                    ))
                                 
                                 # Calculate center
                                 center_lat = map_data[lat_col].mean()
@@ -1134,27 +1150,67 @@ if st.session_state.production_data is not None:
                                 
                                 st.plotly_chart(fig_map, use_container_width=True)
                                 
-                                # Well selector for EUR graph
-                                st.subheader("📈 Click on a Well for EUR Graph")
+                                # Enhanced well selector with EUR ranking and error rates
+                                st.subheader("📈 Select Well for Detailed EUR Analysis")
                                 
-                                if 'WellName' in top_10_wells.columns:
-                                    map_well_options = []
-                                    for idx, row in top_10_wells.iterrows():
-                                        well_name = row['WellName']
-                                        well_id = row.get('API_UWI', row.get('well_id', ''))
-                                        map_well_options.append(f"{well_name} ({well_id})")
+                                # Calculate EUR error rates for each well
+                                wells_with_errors = []
+                                for idx, row in top_10_wells_sorted.iterrows():
+                                    api_uwi = row['API_UWI']
                                     
-                                    selected_map_well_option = st.selectbox(
-                                        "Select a well to view its EUR analysis:",
-                                        options=map_well_options,
-                                        key="map_well_selector"
+                                    # Calculate actual cumulative production for error rate
+                                    well_prod_data = st.session_state.processed_data[
+                                        st.session_state.processed_data['API_UWI'] == api_uwi
+                                    ]
+                                    
+                                    error_rate = 0.0
+                                    if len(well_prod_data) > 0:
+                                        if 'CumProd_BOE' in well_prod_data.columns:
+                                            actual_eur = well_prod_data['CumProd_BOE'].max()
+                                        elif 'Prod_BOE' in well_prod_data.columns:
+                                            actual_eur = well_prod_data['Prod_BOE'].sum()
+                                        else:
+                                            actual_eur = row['EUR_BOE']  # fallback
+                                        
+                                        if actual_eur > 0:
+                                            error_rate = abs(row['EUR_BOE'] - actual_eur) / actual_eur * 100
+                                    
+                                    well_name = row.get('WellName', api_uwi)
+                                    rank = idx + 1
+                                    
+                                    option_text = (f"#{rank} {well_name} | "
+                                                 f"EUR: {row['EUR_BOE']:,.0f} BOE | "
+                                                 f"R²: {row['R2']:.3f} | "
+                                                 f"Error: {error_rate:.1f}%")
+                                    
+                                    wells_with_errors.append({
+                                        'option': option_text,
+                                        'api_uwi': api_uwi,
+                                        'well_name': well_name,
+                                        'error_rate': error_rate
+                                    })
+                                
+                                if wells_with_errors:
+                                    selected_well_option = st.selectbox(
+                                        "Select a well to view its EUR analysis (sorted by highest EUR):",
+                                        options=[w['option'] for w in wells_with_errors],
+                                        key="enhanced_map_well_selector"
                                     )
-                                    selected_map_well = selected_map_well_option.split(' (')[0] if selected_map_well_option else None
+                                    
+                                    # Extract selected well info
+                                    if selected_well_option:
+                                        selected_well_data = next(
+                                            (w for w in wells_with_errors if w['option'] == selected_well_option), 
+                                            None
+                                        )
+                                        selected_map_well = selected_well_data['api_uwi'] if selected_well_data else None
+                                    else:
+                                        selected_map_well = None
                                 else:
                                     selected_map_well = st.selectbox(
                                         "Select a well to view its EUR analysis:",
-                                        options=top_10_wells['API_UWI'].tolist(),
-                                        key="map_well_selector"
+                                        options=top_10_wells_sorted['API_UWI'].tolist(),
+                                        key="simple_map_well_selector"
                                     )
                                 
                                 if selected_map_well:
@@ -1162,25 +1218,92 @@ if st.session_state.production_data is not None:
                                     if len(well_matches) > 0:
                                         well_eur_data = well_matches.iloc[0]
                                         
-                                        # Create EUR graph with prediction
+                                        # Create enhanced EUR graph with confidence intervals
                                         fig_eur_pred = go.Figure()
                                         
-                                        # Historical data
+                                        # Calculate residuals for confidence intervals
+                                        residuals = well_eur_data['q_data'] - well_eur_data['q_pred']
+                                        residual_std = np.std(residuals)
+                                        
+                                        # Calculate confidence bands
+                                        upper_1_65 = well_eur_data['q_pred'] + 1.65 * residual_std
+                                        lower_1_65 = well_eur_data['q_pred'] - 1.65 * residual_std
+                                        upper_2_5 = well_eur_data['q_pred'] + 2.5 * residual_std
+                                        lower_2_5 = well_eur_data['q_pred'] - 2.5 * residual_std
+                                        
+                                        # Add confidence interval bands
                                         fig_eur_pred.add_trace(go.Scatter(
                                             x=well_eur_data['t_data'],
-                                            y=well_eur_data['q_data'],
-                                            mode='markers',
-                                            name='Historical Production',
-                                            marker=dict(color='blue', size=8)
+                                            y=upper_2_5,
+                                            mode='lines',
+                                            name='Upper 2.5σ',
+                                            line=dict(color='rgba(255,0,0,0.3)', width=1, dash='dash'),
+                                            showlegend=True
                                         ))
                                         
-                                        # Fitted model
+                                        fig_eur_pred.add_trace(go.Scatter(
+                                            x=well_eur_data['t_data'],
+                                            y=lower_2_5,
+                                            mode='lines',
+                                            name='Lower 2.5σ',
+                                            line=dict(color='rgba(255,0,0,0.3)', width=1, dash='dash'),
+                                            fill='tonexty',
+                                            fillcolor='rgba(255,0,0,0.1)',
+                                            showlegend=True
+                                        ))
+                                        
+                                        fig_eur_pred.add_trace(go.Scatter(
+                                            x=well_eur_data['t_data'],
+                                            y=upper_1_65,
+                                            mode='lines',
+                                            name='Upper 1.65σ',
+                                            line=dict(color='rgba(255,165,0,0.5)', width=1, dash='dot'),
+                                            showlegend=True
+                                        ))
+                                        
+                                        fig_eur_pred.add_trace(go.Scatter(
+                                            x=well_eur_data['t_data'],
+                                            y=lower_1_65,
+                                            mode='lines',
+                                            name='Lower 1.65σ',
+                                            line=dict(color='rgba(255,165,0,0.5)', width=1, dash='dot'),
+                                            fill='tonexty',
+                                            fillcolor='rgba(255,165,0,0.1)',
+                                            showlegend=True
+                                        ))
+                                        
+                                        # Identify outliers outside confidence bands
+                                        outliers_2_5 = (well_eur_data['q_data'] > upper_2_5) | (well_eur_data['q_data'] < lower_2_5)
+                                        outliers_1_65 = (well_eur_data['q_data'] > upper_1_65) | (well_eur_data['q_data'] < lower_1_65)
+                                        
+                                        # Add historical data points with outlier highlighting
+                                        normal_points = ~outliers_2_5
+                                        if normal_points.any():
+                                            fig_eur_pred.add_trace(go.Scatter(
+                                                x=well_eur_data['t_data'][normal_points],
+                                                y=well_eur_data['q_data'][normal_points],
+                                                mode='markers',
+                                                name='Normal Points',
+                                                marker=dict(color='blue', size=8)
+                                            ))
+                                        
+                                        # Highlight outliers in red
+                                        if outliers_2_5.any():
+                                            fig_eur_pred.add_trace(go.Scatter(
+                                                x=well_eur_data['t_data'][outliers_2_5],
+                                                y=well_eur_data['q_data'][outliers_2_5],
+                                                mode='markers',
+                                                name='Outliers (>2.5σ)',
+                                                marker=dict(color='red', size=10, symbol='diamond')
+                                            ))
+                                        
+                                        # Fitted model line
                                         fig_eur_pred.add_trace(go.Scatter(
                                             x=well_eur_data['t_data'],
                                             y=well_eur_data['q_pred'],
                                             mode='lines',
                                             name='Model Fit',
-                                            line=dict(color='red', width=2)
+                                            line=dict(color='black', width=3)
                                         ))
                                         
                                         # Future prediction
@@ -1196,17 +1319,48 @@ if st.session_state.production_data is not None:
                                         except:
                                             pass
                                         
+                                        # Calculate EUR error rate for this well
+                                        api_uwi = well_eur_data['API_UWI']
+                                        well_prod_data = st.session_state.processed_data[
+                                            st.session_state.processed_data['API_UWI'] == api_uwi
+                                        ]
+                                        
+                                        eur_error_rate = 0.0
+                                        if len(well_prod_data) > 0:
+                                            if 'CumProd_BOE' in well_prod_data.columns:
+                                                actual_eur = well_prod_data['CumProd_BOE'].max()
+                                            elif 'Prod_BOE' in well_prod_data.columns:
+                                                actual_eur = well_prod_data['Prod_BOE'].sum()
+                                            else:
+                                                actual_eur = well_eur_data['EUR_BOE']
+                                            
+                                            if actual_eur > 0:
+                                                eur_error_rate = abs(well_eur_data['EUR_BOE'] - actual_eur) / actual_eur * 100
+                                        
+                                        # Count outliers for display
+                                        outlier_count = outliers_2_5.sum() if hasattr(outliers_2_5, 'sum') else 0
+                                        total_points = len(well_eur_data['t_data']) if hasattr(well_eur_data['t_data'], '__len__') else 0
+                                        
+                                        well_name = well_eur_data.get('WellName', selected_map_well)
+                                        
                                         fig_eur_pred.update_layout(
-                                            title=f"EUR Analysis & Prediction - {selected_map_well}",
+                                            title=f"EUR Analysis: {well_name} | Outliers: {outlier_count}/{total_points} | Error Rate: {eur_error_rate:.1f}%",
                                             xaxis_title="Time (Months)",
                                             yaxis_title="Production Rate (BOE/month)",
-                                            height=500
+                                            height=600,
+                                            legend=dict(
+                                                x=0.02,
+                                                y=0.98,
+                                                bgcolor='rgba(255,255,255,0.8)',
+                                                bordercolor='rgba(0,0,0,0.2)',
+                                                borderwidth=1
+                                            )
                                         )
                                         
                                         st.plotly_chart(fig_eur_pred, use_container_width=True)
                                         
-                                        # Performance metrics
-                                        col1, col2, col3, col4 = st.columns(4)
+                                        # Enhanced performance metrics with EUR error
+                                        col1, col2, col3, col4, col5 = st.columns(5)
                                         with col1:
                                             st.metric("EUR (BOE)", f"{well_eur_data['EUR_BOE']:,.0f}")
                                         with col2:
@@ -1215,6 +1369,8 @@ if st.session_state.production_data is not None:
                                             st.metric("MAE", f"{well_eur_data['MAE']:.2f}")
                                         with col4:
                                             st.metric("RMSE", f"{well_eur_data['RMSE']:.2f}")
+                                        with col5:
+                                            st.metric("EUR Error Rate", f"{eur_error_rate:.1f}%")
                                     else:
                                         st.error(f"Well {selected_map_well} not found in top 10 wells data")
                             else:
@@ -1227,29 +1383,125 @@ if st.session_state.production_data is not None:
                 with subtab4:
                     st.subheader("📈 Individual Well Analysis")
                     
-                    # Well selector
-                    selected_analysis_well = st.selectbox(
-                        "Select a well for detailed analysis:",
-                        options=decline_df['API_UWI'].tolist(),
-                        key="analysis_well_selector"
-                    )
+                    # Enhanced well selector sorted by EUR amount
+                    decline_df_sorted = decline_df.sort_values('EUR_BOE', ascending=False)
+                    
+                    # Create well options with enhanced information
+                    well_analysis_options = []
+                    for idx, row in decline_df_sorted.iterrows():
+                        well_name = row.get('WellName', row['API_UWI'])
+                        rank = decline_df_sorted.index.get_loc(idx) + 1
+                        
+                        option_text = (f"#{rank} {well_name} | "
+                                     f"EUR: {row['EUR_BOE']:,.0f} BOE | "
+                                     f"Model: {row['model']} | "
+                                     f"R²: {row['R2']:.3f}")
+                        
+                        well_analysis_options.append({
+                            'option': option_text,
+                            'api_uwi': row['API_UWI']
+                        })
+                    
+                    if well_analysis_options:
+                        selected_well_option = st.selectbox(
+                            "Select a well for detailed analysis (sorted by highest EUR):",
+                            options=[w['option'] for w in well_analysis_options],
+                            key="enhanced_analysis_well_selector"
+                        )
+                        
+                        # Extract selected well API
+                        if selected_well_option:
+                            selected_well_data = next(
+                                (w for w in well_analysis_options if w['option'] == selected_well_option), 
+                                None
+                            )
+                            selected_analysis_well = selected_well_data['api_uwi'] if selected_well_data else None
+                        else:
+                            selected_analysis_well = None
+                    else:
+                        selected_analysis_well = None
                     
                     if selected_analysis_well:
                         well_analysis_matches = decline_df[decline_df['API_UWI'] == selected_analysis_well]
                         if len(well_analysis_matches) > 0:
                             well_analysis_data = well_analysis_matches.iloc[0]
                             
-                            # Create comprehensive analysis plot
+                            # Create comprehensive analysis plot with confidence intervals
                             fig_analysis = go.Figure()
                             
-                            # Historical data
+                            # Calculate residuals and confidence intervals
+                            residuals = well_analysis_data['q_data'] - well_analysis_data['q_pred']
+                            residual_std = np.std(residuals)
+                            
+                            # Calculate confidence bands
+                            upper_1_65 = well_analysis_data['q_pred'] + 1.65 * residual_std
+                            lower_1_65 = well_analysis_data['q_pred'] - 1.65 * residual_std
+                            upper_2_5 = well_analysis_data['q_pred'] + 2.5 * residual_std
+                            lower_2_5 = well_analysis_data['q_pred'] - 2.5 * residual_std
+                            
+                            # Add confidence interval bands (same as before)
                             fig_analysis.add_trace(go.Scatter(
                                 x=well_analysis_data['t_data'],
-                                y=well_analysis_data['q_data'],
-                                mode='markers',
-                                name='Historical Data',
-                                marker=dict(color='blue', size=8)
+                                y=upper_2_5,
+                                mode='lines',
+                                name='Upper 2.5σ',
+                                line=dict(color='rgba(255,0,0,0.3)', width=1, dash='dash'),
+                                showlegend=True
                             ))
+                            
+                            fig_analysis.add_trace(go.Scatter(
+                                x=well_analysis_data['t_data'],
+                                y=lower_2_5,
+                                mode='lines',
+                                name='Lower 2.5σ',
+                                line=dict(color='rgba(255,0,0,0.3)', width=1, dash='dash'),
+                                fill='tonexty',
+                                fillcolor='rgba(255,0,0,0.1)',
+                                showlegend=True
+                            ))
+                            
+                            fig_analysis.add_trace(go.Scatter(
+                                x=well_analysis_data['t_data'],
+                                y=upper_1_65,
+                                mode='lines',
+                                name='Upper 1.65σ',
+                                line=dict(color='rgba(255,165,0,0.5)', width=1, dash='dot'),
+                                showlegend=True
+                            ))
+                            
+                            fig_analysis.add_trace(go.Scatter(
+                                x=well_analysis_data['t_data'],
+                                y=lower_1_65,
+                                mode='lines',
+                                name='Lower 1.65σ',
+                                line=dict(color='rgba(255,165,0,0.5)', width=1, dash='dot'),
+                                fill='tonexty',
+                                fillcolor='rgba(255,165,0,0.1)',
+                                showlegend=True
+                            ))
+                            
+                            # Identify outliers
+                            outliers_2_5 = (well_analysis_data['q_data'] > upper_2_5) | (well_analysis_data['q_data'] < lower_2_5)
+                            
+                            # Add data points with outlier highlighting
+                            normal_points = ~outliers_2_5
+                            if normal_points.any():
+                                fig_analysis.add_trace(go.Scatter(
+                                    x=well_analysis_data['t_data'][normal_points],
+                                    y=well_analysis_data['q_data'][normal_points],
+                                    mode='markers',
+                                    name='Normal Points',
+                                    marker=dict(color='blue', size=8)
+                                ))
+                            
+                            if outliers_2_5.any():
+                                fig_analysis.add_trace(go.Scatter(
+                                    x=well_analysis_data['t_data'][outliers_2_5],
+                                    y=well_analysis_data['q_data'][outliers_2_5],
+                                    mode='markers',
+                                    name='Outliers (>2.5σ)',
+                                    marker=dict(color='red', size=10, symbol='diamond')
+                                ))
                             
                             # Model fit
                             fig_analysis.add_trace(go.Scatter(

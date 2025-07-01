@@ -127,6 +127,18 @@ Preferred communication style: Simple, everyday language.
 - Improved analysis speed and accuracy by eliminating noise from irrelevant data columns
 - Maintained fallback support for datasets without primary production columns
 
+### Enhanced Map Visualization & Statistical Analysis (July 01, 2025)
+- Enhanced interactive map with well rankings, EUR-based sizing, and well names in hover tooltips
+- Added ranked numbering (#1, #2, etc.) on map markers based on EUR performance
+- Implemented EUR-sorted dropdown selections with error rate percentages displayed
+- Added statistical confidence bands (1.65σ and 2.5σ) to decline curve analysis graphs
+- Implemented outlier highlighting with red diamonds for points outside 2.5σ boundaries
+- Enhanced EUR graphs with error rate percentages and outlier counts in titles
+- Optimized performance by pre-sorting wells by EUR amounts for faster analysis
+- Added comprehensive well selection dropdowns showing rank, EUR, model type, and R² scores
+- Implemented statistical boundary lines matching industry standard confidence intervals
+- Enhanced individual well analysis with same confidence interval visualization
+
 ## Changelog
 
 Changelog:
