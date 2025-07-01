@@ -5,7 +5,9 @@ description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.16.2",
+    "msoffcrypto-tool>=5.4.2",
     "numpy>=2.3.1",
+    "openpyxl>=3.1.5",
     "pandas>=2.3.0",
     "plotly>=6.2.0",
     "psycopg2-binary>=2.9.10",

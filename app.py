@@ -13,6 +13,9 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 import warnings
 import hashlib
+import msoffcrypto
+import tempfile
+import os
 warnings.filterwarnings("ignore")
 
 
@@ -119,6 +122,92 @@ with st.sidebar:
         st.metric("Header Data", "✅ Available")
     if st.session_state.processed_data is not None:
         st.metric("Processed Data", "✅ Ready")
+
+def decrypt_excel_file(uploaded_file, password):
+    """Decrypt an encrypted Excel file using the provided password"""
+    try:
+        # Create a temporary file to work with the encrypted Excel
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+            temp_file.write(uploaded_file.getvalue())
+            temp_file_path = temp_file.name
+        
+        # Create another temporary file for the decrypted output
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as decrypted_file:
+            decrypted_file_path = decrypted_file.name
+        
+        # Decrypt the file
+        with open(temp_file_path, 'rb') as encrypted_file:
+            office_file = msoffcrypto.OfficeFile(encrypted_file)
+            office_file.load_key(password=password)
+            
+            with open(decrypted_file_path, 'wb') as output_file:
+                office_file.decrypt(output_file)
+        
+        # Read the decrypted Excel file
+        df = pd.read_excel(decrypted_file_path)
+        
+        # Clean up temporary files
+        os.unlink(temp_file_path)
+        os.unlink(decrypted_file_path)
+        
+        return df, None
+        
+    except Exception as e:
+        # Clean up temporary files in case of error
+        try:
+            if 'temp_file_path' in locals():
+                os.unlink(temp_file_path)
+            if 'decrypted_file_path' in locals():
+                os.unlink(decrypted_file_path)
+        except:
+            pass
+        
+        return None, str(e)
+
+def handle_encrypted_upload(file_uploader_key, file_type_name):
+    """Handle encrypted Excel file upload with password prompt"""
+    uploaded_file = st.sidebar.file_uploader(
+        f"Upload {file_type_name} (Encrypted Excel)",
+        type=['xlsx', 'xls'],
+        key=f"{file_uploader_key}_encrypted"
+    )
+    
+    if uploaded_file is not None:
+        # Show password input
+        password = st.sidebar.text_input(
+            f"🔑 Password for {file_type_name}",
+            type="password",
+            key=f"{file_uploader_key}_password",
+            help="Enter the password to decrypt the Excel file"
+        )
+        
+        if password:
+            decrypt_button = st.sidebar.button(
+                f"🔓 Decrypt {file_type_name}",
+                key=f"{file_uploader_key}_decrypt"
+            )
+            
+            if decrypt_button:
+                # Show progress indicator
+                progress_placeholder = st.sidebar.empty()
+                progress_placeholder.info(f"🔄 Decrypting {file_type_name}...")
+                
+                df, error = decrypt_excel_file(uploaded_file, password)
+                
+                # Clear progress indicator
+                progress_placeholder.empty()
+                
+                if df is not None:
+                    st.sidebar.success(f"✅ {file_type_name} decrypted and loaded: {len(df)} rows")
+                    return df
+                else:
+                    st.sidebar.error(f"❌ Failed to decrypt {file_type_name}: {error}")
+                    st.sidebar.warning("⚠️ Please check your password and try again")
+                    return None
+        else:
+            st.sidebar.info(f"💡 Enter password to decrypt {file_type_name}")
+    
+    return None
 
 def detect_outliers_iqr(df, column):
     """Detect outliers using IQR method"""
@@ -599,19 +688,45 @@ def create_map_visualization(header_df, well_analysis):
 # Sidebar for file uploads
 st.sidebar.header("📁 Data Upload")
 
-# Production data upload
-production_file = st.sidebar.file_uploader(
-    "Upload Production History Data (CSV)",
-    type=['csv'],
-    key="production_upload"
+# File format selection
+file_format = st.sidebar.radio(
+    "Select file format:",
+    ["📄 CSV Files", "🔒 Encrypted Excel Files"],
+    help="Choose between regular CSV files or password-protected Excel files"
 )
 
-# Header data upload
-header_file = st.sidebar.file_uploader(
-    "Upload Well Header Data (CSV)",
-    type=['csv'],
-    key="header_upload"
-)
+if file_format == "📄 CSV Files":
+    # Regular CSV uploads
+    production_file = st.sidebar.file_uploader(
+        "Upload Production History Data (CSV)",
+        type=['csv'],
+        key="production_upload"
+    )
+    
+    header_file = st.sidebar.file_uploader(
+        "Upload Well Header Data (CSV)",
+        type=['csv'],
+        key="header_upload"
+    )
+    
+    # Handle encrypted data variables
+    encrypted_production_data = None
+    encrypted_header_data = None
+
+else:
+    # Encrypted Excel uploads
+    st.sidebar.markdown("🔒 **Encrypted Excel File Upload**")
+    st.sidebar.info("💡 Upload password-protected Excel files for enhanced security")
+    
+    # Handle encrypted production data
+    encrypted_production_data = handle_encrypted_upload("production", "Production History Data")
+    
+    # Handle encrypted header data
+    encrypted_header_data = handle_encrypted_upload("header", "Well Header Data")
+    
+    # Handle regular file variables
+    production_file = None
+    header_file = None
 
 # Analysis settings
 st.sidebar.header("⚙️ Analysis Settings")
@@ -647,7 +762,7 @@ st.sidebar.markdown("• 0.8+: High quality fits")
 st.sidebar.markdown("• 0.6+: Moderate quality fits")
 st.sidebar.markdown("• 0.4+: Lower quality fits")
 
-# Process uploaded files
+# Process uploaded files (CSV or encrypted Excel)
 if production_file is not None:
     try:
         st.session_state.production_data = pd.read_csv(production_file)
@@ -655,12 +770,18 @@ if production_file is not None:
     except Exception as e:
         st.sidebar.error(f"❌ Error loading production data: {str(e)}")
 
+elif encrypted_production_data is not None:
+    st.session_state.production_data = encrypted_production_data
+
 if header_file is not None:
     try:
         st.session_state.header_data = pd.read_csv(header_file)
         st.sidebar.success(f"✅ Header data loaded: {len(st.session_state.header_data)} rows")
     except Exception as e:
         st.sidebar.error(f"❌ Error loading header data: {str(e)}")
+
+elif encrypted_header_data is not None:
+    st.session_state.header_data = encrypted_header_data
 
 # Main content
 if st.session_state.production_data is not None:

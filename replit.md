@@ -161,6 +161,17 @@ Preferred communication style: Simple, everyday language.
 - Added automatic data clearing on logout to prevent unauthorized access to uploaded files
 - Built user-friendly security interface with proper error handling for failed login attempts
 
+### Encrypted Excel File Support (July 01, 2025)
+- Added support for password-protected Excel files (.xlsx, .xls) using msoffcrypto-tool
+- Implemented dual file format support: regular CSV files and encrypted Excel files
+- Built secure file decryption functionality with temporary file handling
+- Added password input popup for encrypted Excel files with real-time decryption
+- Implemented automatic cleanup of temporary files for security
+- Created user-friendly interface for choosing between CSV and encrypted Excel formats
+- Enhanced data security by supporting both file-level and application-level password protection
+- Added progress indicators and error handling for decryption process
+- Built seamless integration with existing data processing pipeline for both file types
+
 ## Changelog
 
 Changelog:
