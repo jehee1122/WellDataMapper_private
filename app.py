@@ -154,44 +154,36 @@ with st.sidebar:
         st.metric("Processed Data", "✅ Ready")
 
 def decrypt_excel_file(uploaded_file, password):
-    """Decrypt an encrypted Excel file using the provided password with secure in-memory processing"""
-    temp_file_path = None
-    decrypted_file_path = None
-    
+    """Decrypt an encrypted Excel file using the provided password with optimized in-memory processing"""
     try:
-        # Use secure temporary directory (deleted automatically)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Create temporary file paths within the secure directory
-            temp_file_path = os.path.join(temp_dir, f"encrypted_{hashlib.md5(os.urandom(16)).hexdigest()}.xlsx")
-            decrypted_file_path = os.path.join(temp_dir, f"decrypted_{hashlib.md5(os.urandom(16)).hexdigest()}.xlsx")
-            
-            # Write uploaded file to temporary location
-            with open(temp_file_path, 'wb') as temp_file:
-                temp_file.write(uploaded_file.getvalue())
-            
-            # Decrypt the file in memory
-            with open(temp_file_path, 'rb') as encrypted_file:
-                office_file = msoffcrypto.OfficeFile(encrypted_file)
-                office_file.load_key(password=password)
-                
-                # Decrypt to memory buffer first
-                decrypted_buffer = io.BytesIO()
-                office_file.decrypt(decrypted_buffer)
-                decrypted_buffer.seek(0)
-                
-                # Read directly from memory buffer
-                df = pd.read_excel(decrypted_buffer)
-                
-                # Immediately clear sensitive data from memory
-                decrypted_buffer.close()
-                password = None  # Clear password from memory
-            
-            # Temporary files are automatically cleaned up when exiting the context
+        # Direct in-memory processing without temporary files for speed
+        file_buffer = io.BytesIO(uploaded_file.getvalue())
+        
+        # Load and decrypt directly from memory
+        office_file = msoffcrypto.OfficeFile(file_buffer)
+        office_file.load_key(password=password)
+        
+        # Decrypt directly to memory buffer
+        decrypted_buffer = io.BytesIO()
+        office_file.decrypt(decrypted_buffer)
+        decrypted_buffer.seek(0)
+        
+        # Read Excel with optimized parameters for speed
+        df = pd.read_excel(
+            decrypted_buffer,
+            engine='openpyxl',  # Faster engine
+            keep_default_na=False,  # Skip NA processing for speed
+            na_filter=False  # Skip NA filtering for speed
+        )
+        
+        # Immediate cleanup
+        decrypted_buffer.close()
+        file_buffer.close()
+        password = None
         
         return df, None
         
     except Exception as e:
-        # Ensure password is cleared from memory even on error
         password = None
         return None, str(e)
 
@@ -671,16 +663,17 @@ def process_production_data(df):
         fallback_cols = ['WaterProd_BBL', 'RepGasProd_MCF']
         existing_prod_cols.extend([col for col in fallback_cols if col in df_processed.columns])
     
-    # Check for zero columns and replace with NaN, then fill with median
-    zero_columns = df_processed.columns[(df_processed == 0).any()]
-    
-    if len(zero_columns) > 0:
-        df_processed[zero_columns] = df_processed[zero_columns].replace(0, np.nan)
-        
-        for col in zero_columns:
-            if col in existing_prod_cols:
-                median_val = df_processed[col].median()
-                df_processed[col] = df_processed[col].fillna(median_val)
+    # Optimized zero handling - only process essential columns for speed
+    if existing_prod_cols:
+        for col in existing_prod_cols:
+            if col in df_processed.columns:
+                # Vectorized operations for better performance
+                zero_mask = df_processed[col] == 0
+                if zero_mask.any():
+                    non_zero_values = df_processed.loc[~zero_mask, col]
+                    if len(non_zero_values) > 0:
+                        median_val = non_zero_values.median()
+                        df_processed.loc[zero_mask, col] = median_val
     
     # Convert ProducingMonth to datetime
     if 'ProducingMonth' in df_processed.columns:
@@ -702,19 +695,22 @@ def process_production_data(df):
             # Sort by API_UWI and ProducingMonth for cumulative calculations
             df_processed = df_processed.sort_values(['API_UWI', 'ProducingMonth'])
             
-            # Calculate cumulative production metrics
-            if 'Prod_BOE' in df_processed.columns:
-                df_processed['CumProd_BOE'] = df_processed.groupby('API_UWI')['Prod_BOE'].cumsum()
-            if 'GasProd_MCF' in df_processed.columns:
-                df_processed['CumGas_MCF'] = df_processed.groupby('API_UWI')['GasProd_MCF'].cumsum()
-            if 'WaterProd_BBL' in df_processed.columns:
-                df_processed['CumWater_BBL'] = df_processed.groupby('API_UWI')['WaterProd_BBL'].cumsum()
-            if 'Prod_MCFE' in df_processed.columns:
-                df_processed['CumProd_MCFE'] = df_processed.groupby('API_UWI')['Prod_MCFE'].cumsum()
-            if 'LiquidsProd_BBL' in df_processed.columns:
-                df_processed['CumLiquidsProd_BBL'] = df_processed.groupby('API_UWI')['LiquidsProd_BBL'].cumsum()
-            if 'RepGasProd_MCF' in df_processed.columns:
-                df_processed['CumRepGasProd_MCF'] = df_processed.groupby('API_UWI')['RepGasProd_MCF'].cumsum()
+            # Optimized cumulative calculations - batch process for speed
+            cumulative_cols = {
+                'Prod_BOE': 'CumProd_BOE',
+                'GasProd_MCF': 'CumGas_MCF', 
+                'WaterProd_BBL': 'CumWater_BBL',
+                'Prod_MCFE': 'CumProd_MCFE',
+                'LiquidsProd_BBL': 'CumLiquidsProd_BBL',
+                'RepGasProd_MCF': 'CumRepGasProd_MCF'
+            }
+            
+            # Process all cumulative columns at once for efficiency
+            existing_cum_cols = {k: v for k, v in cumulative_cols.items() if k in df_processed.columns}
+            if existing_cum_cols:
+                grouped = df_processed.groupby('API_UWI', sort=False)
+                for prod_col, cum_col in existing_cum_cols.items():
+                    df_processed[cum_col] = grouped[prod_col].cumsum()
     
     return df_processed, existing_prod_cols
 
@@ -1009,20 +1005,43 @@ st.sidebar.markdown("• 0.4+: Lower quality fits")
 # Process uploaded files (CSV or encrypted Excel)
 if production_file is not None:
     try:
-        st.session_state.production_data = pd.read_csv(production_file)
-        st.sidebar.success(f"✅ Production data loaded: {len(st.session_state.production_data)} rows")
+        with st.spinner("⚡ Loading production data..."):
+            # Optimized CSV reading for large files
+            st.session_state.production_data = pd.read_csv(
+                production_file,
+                engine='c',  # Faster C engine
+                low_memory=False,  # Process entire file at once
+                parse_dates=['ProducingMonth'] if 'ProducingMonth' in pd.read_csv(production_file, nrows=1).columns else None
+            )
+        st.sidebar.success(f"✅ Production data loaded: {len(st.session_state.production_data):,} rows")
     except Exception as e:
-        st.sidebar.error(f"❌ Error loading production data: {str(e)}")
+        # Fallback to basic reading
+        try:
+            st.session_state.production_data = pd.read_csv(production_file)
+            st.sidebar.success(f"✅ Production data loaded: {len(st.session_state.production_data):,} rows")
+        except Exception as e2:
+            st.sidebar.error(f"❌ Error loading production data: {str(e2)}")
 
 elif encrypted_production_data is not None:
     st.session_state.production_data = encrypted_production_data
 
 if header_file is not None:
     try:
-        st.session_state.header_data = pd.read_csv(header_file)
-        st.sidebar.success(f"✅ Header data loaded: {len(st.session_state.header_data)} rows")
+        with st.spinner("⚡ Loading header data..."):
+            # Optimized header data reading
+            st.session_state.header_data = pd.read_csv(
+                header_file,
+                engine='c',  # Faster C engine
+                low_memory=False  # Process entire file at once
+            )
+        st.sidebar.success(f"✅ Header data loaded: {len(st.session_state.header_data):,} rows")
     except Exception as e:
-        st.sidebar.error(f"❌ Error loading header data: {str(e)}")
+        # Fallback to basic reading
+        try:
+            st.session_state.header_data = pd.read_csv(header_file)
+            st.sidebar.success(f"✅ Header data loaded: {len(st.session_state.header_data):,} rows")
+        except Exception as e2:
+            st.sidebar.error(f"❌ Error loading header data: {str(e2)}")
 
 elif encrypted_header_data is not None:
     st.session_state.header_data = encrypted_header_data
@@ -1030,15 +1049,38 @@ elif encrypted_header_data is not None:
 # Main content
 if st.session_state.production_data is not None:
     
-    # Process data button
+    # Process data button with optimized performance
     if st.button("🔄 Process Data", type="primary"):
-        with st.spinner("Processing data..."):
-            try:
-                processed_data, prod_cols = process_production_data(st.session_state.production_data)
-                st.session_state.processed_data = processed_data
-                st.success("✅ Data processing completed!")
-            except Exception as e:
-                st.error(f"❌ Error processing data: {str(e)}")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            # Step 1: Initialize
+            status_text.text("⚡ Initializing processing...")
+            progress_bar.progress(20)
+            
+            # Step 2: Process data with performance optimizations
+            status_text.text("🔧 Processing production data with speed optimizations...")
+            progress_bar.progress(60)
+            
+            processed_data, prod_cols = process_production_data(st.session_state.production_data)
+            progress_bar.progress(90)
+            
+            # Step 3: Store results
+            status_text.text("💾 Finalizing...")
+            st.session_state.processed_data = processed_data
+            progress_bar.progress(100)
+            
+            # Clear progress indicators
+            progress_bar.empty()
+            status_text.empty()
+            
+            st.success(f"✅ Data processing completed! Processed {len(processed_data):,} records in optimized mode")
+            
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error(f"❌ Error processing data: {str(e)}")
     
     # Show data analysis if processed
     if st.session_state.processed_data is not None:
