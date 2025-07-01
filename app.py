@@ -1070,6 +1070,165 @@ if st.session_state.production_data is not None:
                         'EUR_BOE': 'mean'
                     }).round(3)
                     st.dataframe(model_performance, use_container_width=True)
+                    
+                    # R² Score Distribution Analysis
+                    st.subheader("📈 R² Score Distribution Analysis")
+                    
+                    # Create R² score ranges with 0.05 increments
+                    r2_ranges = []
+                    range_labels = []
+                    
+                    # Define ranges: 0-0.05, 0.05-0.10, ..., 0.95-1.00
+                    for i in range(20):  # 0.00 to 1.00 in 0.05 increments
+                        start = i * 0.05
+                        end = (i + 1) * 0.05
+                        r2_ranges.append((start, end))
+                        if i == 19:  # Last range should be 0.95-1.00
+                            range_labels.append(f"{start:.2f}–1.00")
+                        else:
+                            range_labels.append(f"{start:.2f}–{end:.2f}")
+                    
+                    # Count wells in each R² range
+                    r2_distribution = []
+                    total_wells = len(decline_df)
+                    
+                    for i, (start, end) in enumerate(r2_ranges):
+                        if i == 19:  # Last range includes 1.00
+                            wells_in_range = decline_df[(decline_df['R2'] >= start) & (decline_df['R2'] <= end)]
+                        else:
+                            wells_in_range = decline_df[(decline_df['R2'] >= start) & (decline_df['R2'] < end)]
+                        
+                        count = len(wells_in_range)
+                        percentage = (count / total_wells) * 100 if total_wells > 0 else 0
+                        
+                        r2_distribution.append({
+                            'R² Range': range_labels[i],
+                            'Well Count': count,
+                            'Percentage': f"{percentage:.1f}%",
+                            'Percentage_Value': percentage,
+                            'Range_Start': start,
+                            'Range_End': end if i < 19 else 1.00
+                        })
+                    
+                    # Create DataFrame for distribution
+                    r2_dist_df = pd.DataFrame(r2_distribution)
+                    
+                    # Filter out ranges with zero wells for cleaner visualization
+                    r2_dist_df_filtered = r2_dist_df[r2_dist_df['Well Count'] > 0].copy()
+                    
+                    if len(r2_dist_df_filtered) > 0:
+                        # Create histogram visualization
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Bar chart showing well counts
+                            fig_r2_hist = px.bar(
+                                r2_dist_df_filtered,
+                                x='R² Range',
+                                y='Well Count',
+                                title="R² Score Distribution - Well Counts",
+                                text='Well Count',
+                                color='Percentage_Value',
+                                color_continuous_scale='Viridis'
+                            )
+                            fig_r2_hist.update_traces(texttemplate='%{text}', textposition='outside')
+                            fig_r2_hist.update_layout(
+                                height=400,
+                                xaxis_tickangle=45,
+                                showlegend=False
+                            )
+                            st.plotly_chart(fig_r2_hist, use_container_width=True)
+                        
+                        with col2:
+                            # Pie chart showing percentage distribution
+                            fig_r2_pie = px.pie(
+                                r2_dist_df_filtered,
+                                values='Well Count',
+                                names='R² Range',
+                                title="R² Score Distribution - Percentages",
+                                hover_data=['Percentage']
+                            )
+                            fig_r2_pie.update_traces(
+                                texttemplate='%{label}<br>%{percent}',
+                                textposition='inside'
+                            )
+                            fig_r2_pie.update_layout(height=400)
+                            st.plotly_chart(fig_r2_pie, use_container_width=True)
+                        
+                        # Display distribution table
+                        st.subheader("R² Score Distribution Summary")
+                        
+                        # Add color coding based on performance ranges
+                        def color_r2_performance(val):
+                            if val >= 0.8:
+                                return 'background-color: #90EE90'  # Light green for excellent
+                            elif val >= 0.7:
+                                return 'background-color: #FFE4B5'  # Light orange for good
+                            elif val >= 0.5:
+                                return 'background-color: #FFA07A'  # Light coral for fair
+                            else:
+                                return 'background-color: #FFB6C1'  # Light pink for poor
+                        
+                        # Display table with styling
+                        display_df = r2_dist_df_filtered[['R² Range', 'Well Count', 'Percentage']].copy()
+                        st.dataframe(display_df, use_container_width=True)
+                        
+                        # Key insights
+                        st.subheader("Key R² Performance Insights")
+                        
+                        # Calculate performance categories
+                        excellent_wells = r2_dist_df[r2_dist_df['Range_Start'] >= 0.8]['Well Count'].sum()
+                        good_wells = r2_dist_df[(r2_dist_df['Range_Start'] >= 0.7) & (r2_dist_df['Range_Start'] < 0.8)]['Well Count'].sum()
+                        fair_wells = r2_dist_df[(r2_dist_df['Range_Start'] >= 0.5) & (r2_dist_df['Range_Start'] < 0.7)]['Well Count'].sum()
+                        poor_wells = r2_dist_df[r2_dist_df['Range_Start'] < 0.5]['Well Count'].sum()
+                        
+                        # Display performance metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric(
+                                "Excellent (R² ≥ 0.8)", 
+                                f"{excellent_wells} wells",
+                                f"{(excellent_wells/total_wells)*100:.1f}% of total"
+                            )
+                        with col2:
+                            st.metric(
+                                "Good (0.7 ≤ R² < 0.8)", 
+                                f"{good_wells} wells",
+                                f"{(good_wells/total_wells)*100:.1f}% of total"
+                            )
+                        with col3:
+                            st.metric(
+                                "Fair (0.5 ≤ R² < 0.7)", 
+                                f"{fair_wells} wells",
+                                f"{(fair_wells/total_wells)*100:.1f}% of total"
+                            )
+                        with col4:
+                            st.metric(
+                                "Poor (R² < 0.5)", 
+                                f"{poor_wells} wells",
+                                f"{(poor_wells/total_wells)*100:.1f}% of total"
+                            )
+                        
+                        # Overall model quality assessment
+                        high_quality_percentage = (excellent_wells / total_wells) * 100
+                        if high_quality_percentage >= 50:
+                            st.success(f"🎯 **Excellent Model Quality**: {high_quality_percentage:.1f}% of wells have R² ≥ 0.8")
+                        elif (excellent_wells + good_wells) / total_wells * 100 >= 70:
+                            st.info(f"✅ **Good Model Quality**: {((excellent_wells + good_wells)/total_wells)*100:.1f}% of wells have R² ≥ 0.7")
+                        else:
+                            st.warning(f"⚠️ **Model Quality Needs Improvement**: Only {((excellent_wells + good_wells)/total_wells)*100:.1f}% of wells have R² ≥ 0.7")
+                        
+                        # Export functionality for R² distribution
+                        st.subheader("Export R² Distribution Data")
+                        csv_r2 = r2_dist_df.to_csv(index=False)
+                        st.download_button(
+                            label="📊 Download R² Distribution Analysis",
+                            data=csv_r2,
+                            file_name="r2_score_distribution.csv",
+                            mime="text/csv"
+                        )
+                    else:
+                        st.warning("No R² score data available for distribution analysis.")
                 
                 with subtab3:
                     st.subheader("🗺️ Top 10 Wells Geographic Distribution")
