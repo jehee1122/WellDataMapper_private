@@ -1,0 +1,80 @@
+import pandas as pd
+df = pd.read_csv('Wells_Production_for modeling-882ff_2025-06-16.csv')
+
+df = pd.DataFrame(df)
+df
+
+#check for 0 columns
+zero_columns = df.columns[(df == 0).any()]
+print(zero_columns)
+
+df_1 = df.copy()
+
+df_1= df_1.dropna(axis=1, how='all')
+
+#replace the 0 value with the median
+import numpy as np
+
+df_1[zero_columns] = df_1[zero_columns].replace(0, np.nan)
+
+for col in zero_columns:
+    median_val = df_1[col].median()
+    df_1[col] = df_1[col].fillna(median_val)
+
+#detect outliers using IQR
+production_cols = ['Prod_BOE', 'Prod_MCFE', 'GasProd_MCF', 'LiquidsProd_BBL','WaterProd_BBL','RepGasProd_MCF','CDProd_BOEPerDAY','CDProd_MCFEPerDAY', 'CDLiquids_BBLPerDAY', 'CDGas_MCFPerDAY',
+       'CDWater_BBLPerDAY', 'CDRepGas_MCFPerDAY', 'PDProd_BOEPerDAY',
+       'PDProd_MCFEPerDAY', 'PDLiquids_BBLPerDAY', 'PDGas_MCFPerDAY',
+       'PDWater_BBLPerDAY', 'PDRepGas_MCFPerDAY', 'CumProd_BOE',
+       'CumProd_MCFE', 'CumLiquids_BBL', 'CumGas_MCF', 'CumWater_BBL',
+       'CumRepGas_MCF']
+
+def detect_outliers_iqr(df_1, column):
+    Q1 = df_1[column].quantile(0.25)
+    Q3 = df_1[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+
+    outliers = df_1[(df_1[column] < lower_bound) | (df_1[column] > upper_bound)]
+    return outliers, lower_bound, upper_bound
+
+for col in production_cols:
+    outliers, lb, ub = detect_outliers_iqr(df_1, col)
+    print(f"{col}: {len(outliers)} outliers detected (outside [{lb:.2f}, {ub:.2f}])")
+
+#Using the cap method to deal with the outliers
+
+# def cap_outliers(df_1, column):
+#     outliers, lb, ub = detect_outliers_iqr(df_1, column)
+#     df_1[column] = df_1[column].clip(lower=lb, upper=ub)
+
+# for col in production_cols:
+#     cap_outliers(df_1, col)
+
+#feature engineering
+
+# df_1['ProducingMonth'] = pd.to_datetime(df_1['ProducingMonth'])
+
+df_1['ProducingMonth'] = pd.to_datetime(df_1['ProducingMonth'],format='mixed',errors='coerce',dayfirst=False       )
+
+# Find the earliest production time for each well
+df_1['FirstProdMonth'] = df_1.groupby('API_UWI')['ProducingMonth'].transform('min')
+
+# Calculate the cumulative months starting from the first month
+df_1['MonthsSinceStart'] = (
+    (df_1['ProducingMonth'].dt.year - df_1['FirstProdMonth'].dt.year) * 12 +
+    (df_1['ProducingMonth'].dt.month - df_1['FirstProdMonth'].dt.month)
+)
+
+df_1['MonthsSinceStart']
+
+# cumulative production
+df_1 = df_1.sort_values(['API_UWI', 'ProducingMonth'])
+
+df_1['CumProd_BOE'] = df_1.groupby('API_UWI')['Prod_BOE'].cumsum()
+df_1['CumGas_MCF'] = df_1.groupby('API_UWI')['GasProd_MCF'].cumsum()
+df_1['CumWater_BBL'] = df_1.groupby('API_UWI')['WaterProd_BBL'].cumsum()
+df_1['CumProd_MCFE'] = df_1.groupby('API_UWI')['Prod_MCFE'].cumsum()
+df_1['CumLiquidsProd_BBL'] = df_1.groupby('API_UWI')['LiquidsProd_BBL'].cumsum()
+df_1['CumRepGasProd_MCF'] = df_1.groupby('API_UWI')['RepGasProd_MCF'].cumsum()
