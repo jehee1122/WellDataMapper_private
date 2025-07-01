@@ -12,6 +12,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 import warnings
+import hashlib
 warnings.filterwarnings("ignore")
 
 
@@ -23,7 +24,61 @@ st.set_page_config(
     layout="wide"
 )
 
-# Title and description
+# Password Protection Configuration
+# You can change these credentials as needed
+VALID_USERNAME = "oilgas_admin"
+VALID_PASSWORD = "SecureWell2025!"
+
+def check_password():
+    """Returns True if the user entered the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        username_input = st.session_state["username"]
+        password_input = st.session_state["password"]
+        
+        # Hash the entered password for comparison
+        entered_hash = hashlib.sha256(password_input.encode()).hexdigest()
+        valid_hash = hashlib.sha256(VALID_PASSWORD.encode()).hexdigest()
+        
+        if username_input == VALID_USERNAME and entered_hash == valid_hash:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password in session
+            del st.session_state["username"]  # Don't store username in session
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if password already validated
+    if "password_correct" in st.session_state and st.session_state["password_correct"]:
+        return True
+
+    # Show login form
+    st.markdown("# 🔐 Secure Access Required")
+    st.markdown("This dashboard contains sensitive oil and gas production data. Please authenticate to continue.")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown("### Login Credentials")
+        st.text_input("Username", key="username", placeholder="Enter username")
+        st.text_input("Password", type="password", key="password", placeholder="Enter password")
+        st.button("Login", on_click=password_entered)
+        
+        # Show error message if password is incorrect
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("❌ Invalid username or password. Please try again.")
+            
+        # Show security notice
+        st.markdown("---")
+        st.info("🔒 **Security Notice**: This platform is protected to ensure the confidentiality of sensitive production data. Access is restricted to authorized personnel only.")
+        
+    return False
+
+# Check authentication before showing the main app
+if not check_password():
+    st.stop()
+
+# Main Application (only runs if authenticated)
 st.title("🛢️ Oil & Gas Well Data Analysis Platform")
 st.markdown("Upload and analyze oil and gas well production data with interactive visualization")
 
@@ -34,6 +89,36 @@ if 'header_data' not in st.session_state:
     st.session_state.header_data = None
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
+
+# Add logout functionality and security info in sidebar
+with st.sidebar:
+    st.markdown("---")
+    st.markdown("### 🔐 Security")
+    st.success("✅ **Authenticated User**")
+    st.markdown("**Session Active**")
+    
+    # Security reminders
+    st.markdown("#### 🛡️ Data Protection")
+    st.warning("⚠️ **Confidential Data**: This platform handles sensitive oil & gas production data. Do not share screen or leave unattended.")
+    
+    # Auto-logout warning
+    st.info("💡 **Security Tip**: Use the logout button when finished to protect your data.")
+    
+    if st.button("🚪 Logout"):
+        # Clear authentication and all session data
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.success("✅ Successfully logged out. Redirecting...")
+        st.rerun()
+    
+    st.markdown("---")
+    st.markdown("#### 📊 Session Info")
+    if st.session_state.production_data is not None:
+        st.metric("Data Loaded", "✅ Production Data")
+    if st.session_state.header_data is not None:
+        st.metric("Header Data", "✅ Available")
+    if st.session_state.processed_data is not None:
+        st.metric("Processed Data", "✅ Ready")
 
 def detect_outliers_iqr(df, column):
     """Detect outliers using IQR method"""
