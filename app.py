@@ -36,6 +36,17 @@ def detect_outliers_iqr(df, column):
     outliers = df[(df[column] < lower_bound) | (df[column] > upper_bound)]
     return outliers, lower_bound, upper_bound
 
+def detect_outliers_iqr_custom(df, column, sensitivity=1.5):
+    """Detect outliers using IQR method with configurable sensitivity"""
+    Q1 = df[column].quantile(0.25)
+    Q3 = df[column].quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - sensitivity * IQR
+    upper_bound = Q3 + sensitivity * IQR
+    
+    outliers = df[(df[column] < lower_bound) | (df[column] > upper_bound)]
+    return outliers, lower_bound, upper_bound
+
 def process_production_data(df):
     """Process production data with cleaning and feature engineering"""
     df_processed = df.copy()
@@ -105,8 +116,8 @@ def process_production_data(df):
     
     return df_processed, existing_prod_cols
 
-def analyze_well_quality(production_df, header_df=None):
-    """Analyze well data quality and create labels"""
+def analyze_well_quality(production_df, header_df=None, outlier_sensitivity=1.5):
+    """Analyze well data quality and create labels with configurable outlier sensitivity"""
     well_analysis = {}
     
     if 'API_UWI' not in production_df.columns:
@@ -134,6 +145,7 @@ def analyze_well_quality(production_df, header_df=None):
             'total_months': 0,
             'outlier_columns': [],
             'null_columns': [],
+            'outlier_details': [],
             'status': 'Normal'
         }
         
@@ -154,21 +166,30 @@ def analyze_well_quality(production_df, header_df=None):
                 analysis['has_null_values'] = True
                 analysis['null_columns'].append(col)
         
-        # Check for outliers
+        # Check for outliers with configurable sensitivity
         for col in existing_prod_cols:
             if len(well_data) > 0 and well_data[col].notna().sum() > 0:
                 try:
-                    outliers, _, _ = detect_outliers_iqr(well_data, col)
+                    Q1 = well_data[col].quantile(0.25)
+                    Q3 = well_data[col].quantile(0.75)
+                    IQR = Q3 - Q1
+                    lower_bound = Q1 - outlier_sensitivity * IQR
+                    upper_bound = Q3 + outlier_sensitivity * IQR
+                    
+                    outliers = well_data[(well_data[col] < lower_bound) | (well_data[col] > upper_bound)]
                     if len(outliers) > 0:
                         analysis['has_outliers'] = True
                         analysis['outlier_columns'].append(col)
+                        analysis['outlier_details'].append(f"Outlier-{col}")
                 except:
                     continue
         
-        # Determine status
+        # Determine status with specific outlier column information
         statuses = []
         if analysis['has_outliers']:
-            statuses.append('Outliers')
+            # Create detailed outlier status
+            outlier_status = ', '.join(analysis['outlier_details'])
+            statuses.append(outlier_status)
         if analysis['has_null_values']:
             statuses.append('Null Values')
         if analysis['insufficient_data']:
@@ -232,18 +253,22 @@ def create_map_visualization(header_df, well_analysis):
         st.error("No valid coordinate data found")
         return None
     
-    # Create color mapping
-    color_map = {
-        'Normal': 'green',
-        'Outliers': 'red',
-        'Null Values': 'orange',
-        'Insufficient Data': 'blue'
-    }
+    # Create enhanced color mapping for specific outlier columns
+    def get_status_color(status):
+        if pd.isna(status) or status == 'Normal':
+            return 'green'
+        elif 'Outlier-' in str(status):
+            return 'red'
+        elif 'Null Values' in str(status):
+            return 'orange'
+        elif 'Insufficient Data' in str(status):
+            return 'blue'
+        elif ',' in str(status):
+            return 'purple'  # Multiple issues
+        else:
+            return 'gray'
     
-    # Handle mixed statuses
-    map_data['Color'] = map_data['Status'].apply(
-        lambda x: 'purple' if ',' in str(x) else color_map.get(x, 'gray')
-    )
+    map_data['Color'] = map_data['Status'].apply(get_status_color)
     
     # Create the map
     fig = go.Figure()
@@ -254,9 +279,9 @@ def create_map_visualization(header_df, well_analysis):
     for status in unique_statuses:
         status_data = map_data[map_data['Status'] == status]
         
-        color = 'purple' if ',' in str(status) else color_map.get(status, 'gray')
+        color = get_status_color(status)
         
-        fig.add_trace(go.Scattermapbox(
+        fig.add_trace(go.Scattermap(
             lat=status_data[lat_col],
             lon=status_data[lon_col],
             mode='markers',
@@ -281,7 +306,7 @@ def create_map_visualization(header_df, well_analysis):
     
     # Update layout
     fig.update_layout(
-        mapbox=dict(
+        map=dict(
             style="open-street-map",
             center=dict(lat=center_lat, lon=center_lon),
             zoom=8
@@ -308,6 +333,22 @@ header_file = st.sidebar.file_uploader(
     type=['csv'],
     key="header_upload"
 )
+
+# Outlier detection settings
+st.sidebar.header("⚙️ Analysis Settings")
+outlier_sensitivity = st.sidebar.slider(
+    "Outlier Detection Sensitivity",
+    min_value=1.0,
+    max_value=3.0,
+    value=1.5,
+    step=0.1,
+    help="Higher values = fewer outliers detected. Lower values = more outliers detected."
+)
+
+st.sidebar.markdown("**Sensitivity Guide:**")
+st.sidebar.markdown("• 1.0-1.5: Strict (more outliers)")
+st.sidebar.markdown("• 1.5-2.0: Standard")
+st.sidebar.markdown("• 2.0-3.0: Lenient (fewer outliers)")
 
 # Process uploaded files
 if production_file is not None:
@@ -340,10 +381,11 @@ if st.session_state.production_data is not None:
     # Show data analysis if processed
     if st.session_state.processed_data is not None:
         
-        # Analyze well quality
+        # Analyze well quality with custom outlier sensitivity
         well_analysis = analyze_well_quality(
             st.session_state.processed_data, 
-            st.session_state.header_data
+            st.session_state.header_data,
+            outlier_sensitivity=outlier_sensitivity
         )
         
         # Create tabs for different views
@@ -382,7 +424,7 @@ if st.session_state.production_data is not None:
                 if map_fig is not None:
                     st.plotly_chart(map_fig, use_container_width=True)
                     
-                    # Legend
+                    # Enhanced Legend with outlier column details
                     st.markdown("### Map Legend")
                     col1, col2, col3, col4, col5 = st.columns(5)
                     
@@ -390,12 +432,19 @@ if st.session_state.production_data is not None:
                         st.markdown("🟢 **Normal Wells**")
                     with col2:
                         st.markdown("🔴 **Wells with Outliers**")
+                        if outlier_by_column:
+                            st.markdown("*Common outlier columns:*")
+                            for col in list(outlier_by_column.keys())[:2]:
+                                st.markdown(f"• {col}")
                     with col3:
                         st.markdown("🟠 **Wells with Null Values**")
                     with col4:
                         st.markdown("🔵 **Insufficient Data (<6 months)**")
                     with col5:
                         st.markdown("🟣 **Multiple Issues**")
+                        
+                    # Display outlier sensitivity impact
+                    st.info(f"**Current Outlier Sensitivity: {outlier_sensitivity:.1f}** - Adjust in sidebar to reduce/increase outlier detection")
             else:
                 st.info("📍 Upload header data with coordinate information to display the interactive map")
         
@@ -476,16 +525,91 @@ if st.session_state.production_data is not None:
                 'Missing_Values': missing_data.values,
                 'Missing_Percentage': missing_percent.values
             })
-            quality_df = quality_df[quality_df['Missing_Values'] > 0].sort_values('Missing_Values', ascending=False)
             
-            if len(quality_df) > 0:
+            # Filter and sort missing values data
+            quality_df_filtered = quality_df[quality_df['Missing_Values'] > 0].copy()
+            if len(quality_df_filtered) > 0:
+                quality_df_filtered = quality_df_filtered.reset_index(drop=True)
+                try:
+                    quality_df_filtered = quality_df_filtered.sort_values('Missing_Values', ascending=False)
+                except:
+                    pass  # If sorting fails, show unsorted data
                 st.subheader("Missing Values by Column")
-                st.dataframe(quality_df, use_container_width=True)
+                st.dataframe(quality_df_filtered, use_container_width=True)
             else:
                 st.success("✅ No missing values detected in processed data")
             
-            # Outlier detection summary
+            # Outlier detection summary with specific column analysis
             st.subheader("Outlier Detection Summary")
+            
+            # Calculate outlier statistics
+            if well_analysis:
+                total_wells = len(well_analysis)
+                outlier_wells = sum(1 for w in well_analysis.values() if w['has_outliers'])
+                null_wells = sum(1 for w in well_analysis.values() if w['has_null_values'])
+                insufficient_wells = sum(1 for w in well_analysis.values() if w['insufficient_data'])
+            else:
+                total_wells = 0
+                outlier_wells = 0
+                null_wells = 0
+                insufficient_wells = 0
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.metric("Current Sensitivity", f"{outlier_sensitivity:.1f}")
+                st.metric("Wells with Outliers", outlier_wells)
+                
+            with col2:
+                st.metric("Total Wells Analyzed", total_wells)
+                outlier_percentage = (outlier_wells / total_wells * 100) if total_wells > 0 else 0
+                st.metric("Outlier Wells %", f"{outlier_percentage:.1f}%")
+            
+            # Detailed outlier analysis by column
+            st.subheader("Outlier Analysis by Column")
+            
+            # Create outlier summary by column
+            outlier_by_column = {}
+            for well_id, analysis in well_analysis.items():
+                for outlier_detail in analysis.get('outlier_details', []):
+                    column = outlier_detail.replace('Outlier-', '')
+                    if column not in outlier_by_column:
+                        outlier_by_column[column] = 0
+                    outlier_by_column[column] += 1
+            
+            if outlier_by_column:
+                outlier_df = pd.DataFrame([
+                    {'Column': col, 'Wells_with_Outliers': count, 'Percentage': (count/total_wells*100)}
+                    for col, count in outlier_by_column.items()
+                ])
+                outlier_df = outlier_df.sort_values('Wells_with_Outliers', ascending=False)
+                st.dataframe(outlier_df, use_container_width=True)
+                
+                # Outlier reduction strategies
+                st.subheader("Outlier Reduction Strategies")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Current Sensitivity: {:.1f}**".format(outlier_sensitivity))
+                    st.markdown("**Methods to Reduce Outliers:**")
+                    st.markdown("• Increase sensitivity to 2.0-2.5")
+                    st.markdown("• Apply data smoothing techniques")
+                    st.markdown("• Use percentile-based capping")
+                    st.markdown("• Remove seasonal effects")
+                    
+                with col2:
+                    st.markdown("**Column-Specific Recommendations:**")
+                    for col, count in list(outlier_by_column.items())[:3]:  # Top 3 columns
+                        percentage = count/total_wells*100
+                        if percentage > 20:
+                            st.markdown(f"• **{col}**: High outliers ({percentage:.1f}%) - Consider data validation")
+                        elif percentage > 10:
+                            st.markdown(f"• **{col}**: Moderate outliers ({percentage:.1f}%) - Review thresholds")
+                        else:
+                            st.markdown(f"• **{col}**: Low outliers ({percentage:.1f}%) - Normal variation")
+            else:
+                st.success("✅ No outliers detected with current sensitivity settings")
             
             production_cols = [
                 'Prod_BOE', 'Prod_MCFE', 'GasProd_MCF', 'LiquidsProd_BBL',

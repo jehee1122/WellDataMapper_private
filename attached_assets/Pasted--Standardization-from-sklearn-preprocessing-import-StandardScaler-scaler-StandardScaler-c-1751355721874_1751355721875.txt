@@ -1,0 +1,409 @@
+#Standardization
+from sklearn.preprocessing import StandardScaler
+
+scaler = StandardScaler()
+
+cols_to_scale = [
+    'CDProd_BOEPerDAY', 'CDGas_MCFPerDAY', 'CDWater_BBLPerDAY',
+    'CDProd_MCFEPerDAY','CDLiquids_BBLPerDAY','CDRepGas_MCFPerDAY',
+    'CumProd_BOE', 'CumGas_MCF', 'CumWater_BBL','CumProd_MCFE',
+    'CumLiquidsProd_BBL','CumRepGasProd_MCF',
+    'TotalProdMonths', 'TotalCompletionMonths', 'ProducingDays'
+]
+
+
+df_1[cols_to_scale] = scaler.fit_transform(df_1[cols_to_scale])
+
+#EDA
+import matplotlib.pyplot as plt
+
+top_wells = df_1['API_UWI'].value_counts().head(5).index.tolist()
+df_1_subset = df_1[df_1['API_UWI'].isin(top_wells)]
+
+plt.figure(figsize=(12, 6))
+
+for well in top_wells:
+    well_data = df_1_subset[df_1_subset['API_UWI'] == well]
+    plt.plot(well_data['ProducingMonth'], well_data['Prod_BOE'], label=f"{well}")
+
+plt.xlabel('Producing Month')
+plt.ylabel('Monthly Production (BOE)')
+plt.title('Monthly BOE Production Over Time for Representative Wells')
+plt.legend(title='API_UWI', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.grid(True)
+plt.show()
+
+import seaborn as sns
+corr_columns = [
+    'Prod_BOE', 'GasProd_MCF', 'WaterProd_BBL', 'CDProd_BOEPerDAY',
+    'CDGas_MCFPerDAY', 'CDWater_BBLPerDAY',
+    'CumProd_BOE', 'CumGas_MCF', 'CumWater_BBL',
+    'ProducingDays', 'TotalProdMonths', 'TotalCompletionMonths'
+]
+
+corr_matrix = df[corr_columns].corr()
+
+
+plt.figure(figsize=(12, 8))
+sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap='coolwarm', square=True, cbar_kws={"shrink": 0.8})
+plt.title("Correlation Heatmap of Key Production Features")
+plt.tight_layout()
+plt.show()
+
+import numpy as np
+from scipy.optimize import curve_fit
+
+df_1['t_months'] = df_1.groupby('API_UWI')['ProducingMonth'].transform(lambda x: (x - x.min()).dt.days / 30.0)
+
+
+
+def arps_hyperbolic(t, qi, D, b):
+    return qi / ((1 + b * D * t) ** (1 / b))
+
+eur_results = []
+for api, group in df_1.groupby('API_UWI'):
+    group = group.dropna(subset=['Prod_BOE', 'ProducingMonth']).sort_values('ProducingMonth')
+    if group.shape[0] < 6:
+        continue
+    group['t'] = (group['ProducingMonth'] - group['ProducingMonth'].min()).dt.days / 30.0
+    t = group['t'].values
+    q = group['Prod_BOE'].values
+
+
+    if np.any(q < 0) or np.all(q == 0) or np.isnan(q).any():
+        continue
+
+    try:
+
+        popt, _ = curve_fit(
+            arps_hyperbolic,
+            t, q,
+            p0=[max(q[0], 1), 0.01, 0.5],
+            bounds=([0.01, 1e-5, 0.01], [1e6, 1, 2]),
+            maxfev=20000
+        )
+        qi, D, b = popt
+        t_end = t.max()
+        if b != 1:
+            eur = (qi / ((1 - b) * D)) * (1 - (1 + b * D * t_end) ** (1 - 1 / b))
+        else:
+            eur = qi / D * (1 - np.exp(-D * t_end))
+        eur_results.append({'API_UWI': api, 'qi': qi, 'D': D, 'b': b, 'EUR_BOE': eur})
+    except:
+        continue
+
+eur_df = pd.DataFrame(eur_results)
+
+df_last_1 = df_1.sort_values('ProducingMonth').groupby('API_UWI').tail(1)
+df_eda = df_last_1.merge(eur_df, on='API_UWI', how='inner')
+
+group_field = 'ProducingOperator'
+top_groups = df_eda[group_field].value_counts().nlargest(8).index
+df_eda_filtered = df_eda[df_eda[group_field].isin(top_groups)]
+
+plt.figure(figsize=(12, 6))
+sns.boxplot(data=df_eda_filtered, x='ProducingOperator', y='EUR_BOE')
+plt.xticks(rotation=45)
+plt.title("EUR Distribution by Producing Operator")
+plt.ylabel("Estimated EUR (BOE)")
+plt.xlabel("Producing Operator")
+plt.tight_layout()
+plt.show()
+
+# Curve Analysis & EUR Estimation
+
+import pandas as pd
+import numpy as np
+from scipy.optimize import curve_fit
+import warnings
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+
+def arps_exponential(t, qi, D):
+    return qi * np.exp(-D * t)
+
+def arps_harmonic(t, qi, D):
+    return qi / (1 + D * t)
+
+def arps_hyperbolic(t, qi, D, b):
+    return qi / ((1 + b * D * t) ** (1 / b))
+
+def compute_eur(model, qi, D, b=None, t_end=None):
+    if model == 'exponential':
+        return qi / D * (1 - np.exp(-D * t_end))
+    elif model == 'harmonic':
+        return qi * np.log(1 + D * t_end) / D
+    elif model == 'hyperbolic':
+        if b == 1:
+            return qi / D * (1 - np.exp(-D * t_end))
+        base = 1 + b * D * t_end
+        if base <= 0:
+            return np.nan
+        return (qi / ((1 - b) * D)) * (1 - base ** (1 - 1 / b))
+
+
+
+
+eur_all_models = []
+
+for api, group in df_1.groupby('API_UWI'):
+    group = group.sort_values('ProducingMonth')
+    if group.shape[0] < 6:
+        continue
+
+    t = (group['ProducingMonth'] - group['ProducingMonth'].min()).dt.days / 30.0
+    q = group['Prod_BOE'].values
+    t_end = t.max()
+
+    if np.any(q < 0) or np.all(q == 0) or np.isnan(q).any():
+        continue
+
+
+    try:
+        popt_exp, _ = curve_fit(arps_exponential, t, q, p0=[q[0], 0.01], bounds=([0.01, 1e-5], [1e6, 1]), maxfev=10000)
+        qi_exp, D_exp = popt_exp
+        eur_exp = compute_eur('exponential', qi_exp, D_exp, t_end=t_end)
+        if eur_exp > 0:
+            eur_all_models.append({
+                'API_UWI': api, 'model': 'exponential',
+                'qi': qi_exp, 'D': D_exp, 'b': np.nan,
+                'EUR_BOE': eur_exp
+            })
+    except:
+        pass
+
+    # Fit harmonic
+    try:
+        popt_har, _ = curve_fit(arps_harmonic, t, q, p0=[q[0], 0.01], bounds=([0.01, 1e-5], [1e6, 1]), maxfev=10000)
+        qi_har, D_har = popt_har
+        eur_har = compute_eur('harmonic', qi_har, D_har, t_end=t_end)
+        if eur_har > 0:
+            eur_all_models.append({
+                'API_UWI': api, 'model': 'harmonic',
+                'qi': qi_har, 'D': D_har, 'b': np.nan,
+                'EUR_BOE': eur_har
+            })
+    except:
+        pass
+
+    # Fit hyperbolic
+    try:
+        popt_hyp, _ = curve_fit(arps_hyperbolic, t, q, p0=[q[0], 0.01, 0.5],
+                                bounds=([0.01, 1e-5, 0.01], [1e6, 1, 2]), maxfev=20000)
+        qi_hyp, D_hyp, b_hyp = popt_hyp
+        eur_hyp = compute_eur('hyperbolic', qi_hyp, D_hyp, b=b_hyp, t_end=t_end)
+        if eur_hyp > 0:
+            eur_all_models.append({
+                'API_UWI': api, 'model': 'hyperbolic',
+                'qi': qi_hyp, 'D': D_hyp, 'b': b_hyp,
+                'EUR_BOE': eur_hyp
+            })
+    except:
+        pass
+
+
+eur_all_df = pd.DataFrame(eur_all_models)
+
+eur_all_df
+
+from sklearn.metrics import mean_squared_error, r2_score
+
+
+evaluated_results = []
+
+for api, group in df_1.groupby('API_UWI'):
+    group = group.sort_values('ProducingMonth')
+    if group.shape[0] < 6:
+        continue
+
+    t = (group['ProducingMonth'] - group['ProducingMonth'].min()).dt.days / 30.0
+    q = group['Prod_BOE'].values
+    t_end = t.max()
+
+    if np.any(q < 0) or np.all(q == 0) or np.isnan(q).any():
+        continue
+
+    def try_fit(model_name, model_func, p0, bounds, compute_eur_kwargs):
+        try:
+            popt, _ = curve_fit(model_func, t, q, p0=p0, bounds=bounds, maxfev=20000)
+            q_pred = model_func(t, *popt)
+            mse = mean_squared_error(q, q_pred)
+            r2 = r2_score(q, q_pred)
+            eur = compute_eur(model_name, *popt, **compute_eur_kwargs)
+            if eur > 0:
+                result = {
+                    'API_UWI': api, 'model': model_name,
+                    'qi': popt[0], 'D': popt[1],
+                    'b': popt[2] if model_name == 'hyperbolic' else np.nan,
+                    'EUR_BOE': eur, 'MSE': mse, 'R2': r2
+                }
+                evaluated_results.append(result)
+        except:
+            pass
+
+    try_fit('exponential', arps_exponential, [q[0], 0.01], ([0.01, 1e-5], [1e6, 1]), {'t_end': t_end})
+    try_fit('harmonic', arps_harmonic, [q[0], 0.01], ([0.01, 1e-5], [1e6, 1]), {'t_end': t_end})
+    try_fit('hyperbolic', arps_hyperbolic, [q[0], 0.01, 0.5], ([0.01, 1e-5, 0.01], [1e6, 1, 2]), {'b': None, 't_end': t_end})
+
+evaluated_df = pd.DataFrame(evaluated_results)
+
+best_models_df = evaluated_df.loc[evaluated_df.groupby('API_UWI')['R2'].idxmax()].reset_index(drop=True)
+
+# Monte Carlo
+mc_results = []
+
+N = 1000
+
+for _, row in best_models_df.iterrows():
+    api = row['API_UWI']
+    model = row['model']
+    qi, D, b, t_end = row['qi'], row['D'], row['b'], df_1[df_1['API_UWI'] == row['API_UWI']]['t_months'].max()
+
+
+    qi_samples = np.random.normal(qi, 0.1 * qi, size=N)
+    D_samples = np.random.normal(D, 0.1 * D, size=N)
+    b_samples = np.random.normal(b, 0.1 * b, size=N) if model == 'hyperbolic' else np.full(N, np.nan)
+
+    eur_samples = []
+    for i in range(N):
+        try:
+            if model == 'exponential':
+                eur_i = compute_eur('exponential', qi_samples[i], D_samples[i], t_end=t_end)
+            elif model == 'harmonic':
+                eur_i = compute_eur('harmonic', qi_samples[i], D_samples[i], t_end=t_end)
+            else:
+                eur_i = compute_eur('hyperbolic', qi_samples[i], D_samples[i], b_samples[i], t_end=t_end)
+            if eur_i > 0 and np.isfinite(eur_i):
+                eur_samples.append(eur_i)
+        except:
+            continue
+
+    if len(eur_samples) > 0:
+        eur_samples = np.array(eur_samples)
+        mc_results.append({
+            'API_UWI': api,
+            'model': model,
+            'EUR_mean': np.mean(eur_samples),
+            'EUR_p50': np.percentile(eur_samples, 50),
+            'EUR_p90': np.percentile(eur_samples, 90),
+            'EUR_p10': np.percentile(eur_samples, 10),
+            'EUR_p5': np.percentile(eur_samples, 5),
+            'EUR_p95': np.percentile(eur_samples, 95),
+        })
+
+mc_df = pd.DataFrame(mc_results)
+
+mc_df
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+sns.set(style='whitegrid')
+plt.rcParams['figure.figsize'] = (10, 6)
+
+
+# single well
+def plot_eur_distribution(api_uwi, eur_samples):
+    plt.figure()
+    sns.histplot(eur_samples, kde=True, bins=50, color='skyblue')
+    plt.axvline(np.median(eur_samples), color='orange', linestyle='--', label='Median')
+    plt.axvline(np.percentile(eur_samples, 5), color='red', linestyle=':', label='P5/P95')
+    plt.axvline(np.percentile(eur_samples, 95), color='red', linestyle=':')
+    plt.title(f"EUR Distribution (Monte Carlo) - Well: {api_uwi}")
+    plt.xlabel("EUR (BOE)")
+    plt.ylabel("Frequency")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+# first well
+sample_api = mc_df.iloc[0]['API_UWI']
+t_end = df_1[df_1['API_UWI'] == sample_api]['t_months'].max()
+best_row = best_models_df[best_models_df['API_UWI'] == sample_api].iloc[0]
+qi, D, b = best_row['qi'], best_row['D'], best_row['b']
+model = best_row['model']
+
+N = 1000
+qi_samples = np.random.normal(qi, 0.1 * qi, size=N)
+D_samples = np.random.normal(D, 0.1 * D, size=N)
+b_samples = np.random.normal(b, 0.1 * b, size=N) if model == 'hyperbolic' else np.full(N, np.nan)
+
+eur_samples = []
+for i in range(N):
+    try:
+        if model == 'exponential':
+            eur_i = compute_eur('exponential', qi_samples[i], D_samples[i], t_end=t_end)
+        elif model == 'harmonic':
+            eur_i = compute_eur('harmonic', qi_samples[i], D_samples[i], t_end=t_end)
+        else:
+            eur_i = compute_eur('hyperbolic', qi_samples[i], D_samples[i], b_samples[i], t_end=t_end)
+        if eur_i > 0 and np.isfinite(eur_i):
+            eur_samples.append(eur_i)
+    except:
+        continue
+
+plot_eur_distribution(sample_api, eur_samples)
+
+#XGBOOST
+
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+unique_wells = best_models_df['API_UWI'].unique()
+train_wells, test_wells = train_test_split(unique_wells, test_size=0.3, random_state=42)
+
+
+features = ['qi', 'D', 'b']
+best_models_df['b'] = best_models_df['b'].fillna(0.0)
+
+
+train_df = best_models_df[best_models_df['API_UWI'].isin(train_wells)].copy()
+test_df = best_models_df[best_models_df['API_UWI'].isin(test_wells)].copy()
+
+
+X_train = train_df[features]
+y_train = np.log1p(train_df['EUR_BOE'])
+X_test = test_df[features]
+y_test = np.log1p(test_df['EUR_BOE'])
+
+
+
+model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.1, random_state=42)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+
+
+
+mae = mean_absolute_error(y_test, y_pred)
+mse = mean_squared_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+r2 = r2_score(y_test, y_pred)
+
+
+print(f" - MAE  = {mae:.2f}")
+print(f" - RMSE = {rmse:.2f}")
+print(f" - R²   = {r2:.4f}")
+
+#k-fold
+
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import KFold
+import numpy as np
+import pandas as pd
+
+
+best_models_df_1 = best_models_df.copy()
+
+features = ['qi', 'D', 'b']
+best_models_df_1['b'] = best_models_df_1['b'].fillna(0.0)
+
+X = best_models_df_1[features]
+y = np.log1p(best_models_df_1['EUR_BOE'])
