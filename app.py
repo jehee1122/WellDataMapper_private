@@ -30,7 +30,7 @@ st.set_page_config(
 # Password Protection Configuration
 # Credentials are hashed and never stored in plaintext
 VALID_USERNAME_HASH = "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"  # admin
-VALID_PASSWORD_HASH = "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f"  # SecureWell2025!
+VALID_PASSWORD_HASH = "cbfe2ba760320c592f1803866b86f0ac0f7279b8458849570c790177dd2a31ad"  # SecureWell2025!
 
 def check_password():
     """Returns True if the user entered the correct password."""
