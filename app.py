@@ -233,20 +233,21 @@ def process_production_data(df):
     # Remove completely empty columns
     df_processed = df_processed.dropna(axis=1, how='all')
     
-    # Define production columns for outlier detection
-    production_cols = [
-        'Prod_BOE', 'Prod_MCFE', 'GasProd_MCF', 'LiquidsProd_BBL',
-        'WaterProd_BBL', 'RepGasProd_MCF', 'CDProd_BOEPerDAY',
-        'CDProd_MCFEPerDAY', 'CDLiquids_BBLPerDAY', 'CDGas_MCFPerDAY',
-        'CDWater_BBLPerDAY', 'CDRepGas_MCFPerDAY', 'PDProd_BOEPerDAY',
-        'PDProd_MCFEPerDAY', 'PDLiquids_BBLPerDAY', 'PDGas_MCFPerDAY',
-        'PDWater_BBLPerDAY', 'PDRepGas_MCFPerDAY', 'CumProd_BOE',
-        'CumProd_MCFE', 'CumLiquids_BBL', 'CumGas_MCF', 'CumWater_BBL',
-        'CumRepGas_MCF'
+    # Define only essential production columns needed for decline curve modeling and EUR prediction
+    essential_modeling_cols = [
+        'Prod_BOE',         # Primary metric for EUR calculations
+        'Prod_MCFE',        # Alternative primary metric for gas wells
+        'GasProd_MCF',      # Essential for gas wells
+        'LiquidsProd_BBL'   # Essential for liquids production
     ]
     
-    # Filter columns that actually exist in the dataframe
-    existing_prod_cols = [col for col in production_cols if col in df_processed.columns]
+    # Filter columns that actually exist in the dataframe and are essential for modeling
+    existing_prod_cols = [col for col in essential_modeling_cols if col in df_processed.columns]
+    
+    # If no essential columns found, add minimal fallback columns
+    if not existing_prod_cols:
+        fallback_cols = ['WaterProd_BBL', 'RepGasProd_MCF']
+        existing_prod_cols.extend([col for col in fallback_cols if col in df_processed.columns])
     
     # Check for zero columns and replace with NaN, then fill with median
     zero_columns = df_processed.columns[(df_processed == 0).any()]
@@ -305,12 +306,22 @@ def analyze_well_quality(production_df, header_df=None, outlier_sensitivity=1.5)
     # Get unique wells
     wells = production_df['API_UWI'].unique()
     
-    # Define production columns for outlier detection
-    production_cols = [
-        'Prod_BOE', 'Prod_MCFE', 'GasProd_MCF', 'LiquidsProd_BBL',
-        'WaterProd_BBL', 'RepGasProd_MCF'
+    # Define only essential production columns for decline curve modeling and EUR prediction
+    # Focus on primary production metrics needed for analysis
+    essential_production_cols = [
+        'Prod_BOE',      # Primary metric for EUR calculations
+        'Prod_MCFE',     # Alternative primary metric
+        'GasProd_MCF',   # Key for gas wells
+        'LiquidsProd_BBL' # Key for liquids production
     ]
-    existing_prod_cols = [col for col in production_cols if col in production_df.columns]
+    
+    # Only check columns that exist and are essential for modeling
+    existing_prod_cols = [col for col in essential_production_cols if col in production_df.columns]
+    
+    # If none of the essential columns exist, fall back to any production column
+    if not existing_prod_cols:
+        fallback_cols = ['WaterProd_BBL', 'RepGasProd_MCF']
+        existing_prod_cols = [col for col in fallback_cols if col in production_df.columns]
     
     for well in wells:
         well_data = production_df[production_df['API_UWI'] == well]
@@ -705,6 +716,20 @@ if st.session_state.production_data is not None:
         
         with tab4:
             st.header("📋 Data Quality Report")
+            
+            # Outlier detection optimization info
+            st.subheader("🎯 Optimized Outlier Detection")
+            st.info("""
+            **Smart Column Selection**: Outlier detection now focuses only on essential production columns needed for modeling:
+            
+            • **Prod_BOE** - Primary metric for EUR calculations
+            • **Prod_MCFE** - Alternative primary metric for gas wells  
+            • **GasProd_MCF** - Essential for gas well analysis
+            • **LiquidsProd_BBL** - Essential for liquids production analysis
+            
+            This optimization improves analysis efficiency by excluding non-essential columns like water production 
+            or administrative fields that don't impact decline curve modeling and EUR predictions.
+            """)
             
             # Overall data quality metrics
             st.subheader("Data Quality Metrics")
