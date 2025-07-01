@@ -438,11 +438,21 @@ def calculate_well_performance_metrics(production_df, header_df=None):
     if production_df is None or production_df.empty:
         return None
     
+    # Determine well ID column (flexible column mapping)
+    well_id_col = None
+    for col_name in ['WellId', 'API_UWI', 'Well_ID', 'UWI', 'WellID']:
+        if col_name in production_df.columns:
+            well_id_col = col_name
+            break
+    
+    if well_id_col is None:
+        raise ValueError("No well identifier column found. Expected one of: WellId, API_UWI, Well_ID, UWI, WellID")
+    
     # Group by well to calculate metrics
     well_metrics = []
     
-    for well_id in production_df['WellId'].unique():
-        well_data = production_df[production_df['WellId'] == well_id].copy()
+    for well_id in production_df[well_id_col].unique():
+        well_data = production_df[production_df[well_id_col] == well_id].copy()
         well_data = well_data.sort_values('ProducingMonth')
         
         if len(well_data) == 0:
@@ -477,13 +487,22 @@ def calculate_well_performance_metrics(production_df, header_df=None):
             'Reservoir_Asset': well_data.get('Field', 'Unknown').iloc[0] if 'Field' in well_data.columns else 'Unknown',
         }
         
-        # Get lateral length from header data if available
-        if header_df is not None and 'WellId' in header_df.columns:
-            header_row = header_df[header_df['WellId'] == well_id]
-            if not header_row.empty:
-                lateral_col = next((col for col in ['LateralLength', 'Lateral_Length', 'Completed_Length'] if col in header_row.columns), None)
-                if lateral_col:
-                    metrics['Lateral_Length_ft'] = header_row[lateral_col].iloc[0]
+        # Get lateral length from header data if available (check multiple possible ID columns)
+        if header_df is not None:
+            header_well_id_col = None
+            for col_name in ['WellId', 'API_UWI', 'Well_ID', 'UWI', 'WellID']:
+                if col_name in header_df.columns:
+                    header_well_id_col = col_name
+                    break
+            
+            if header_well_id_col:
+                header_row = header_df[header_df[header_well_id_col] == well_id]
+                if not header_row.empty:
+                    lateral_col = next((col for col in ['LateralLength', 'Lateral_Length', 'Completed_Length'] if col in header_row.columns), None)
+                    if lateral_col:
+                        metrics['Lateral_Length_ft'] = header_row[lateral_col].iloc[0]
+                    else:
+                        metrics['Lateral_Length_ft'] = np.nan
                 else:
                     metrics['Lateral_Length_ft'] = np.nan
             else:
@@ -573,10 +592,20 @@ def predict_well_performance_forecast(production_df, months_ahead=1):
     if production_df is None or production_df.empty:
         return None
     
+    # Determine well ID column (flexible column mapping)
+    well_id_col = None
+    for col_name in ['WellId', 'API_UWI', 'Well_ID', 'UWI', 'WellID']:
+        if col_name in production_df.columns:
+            well_id_col = col_name
+            break
+    
+    if well_id_col is None:
+        raise ValueError("No well identifier column found. Expected one of: WellId, API_UWI, Well_ID, UWI, WellID")
+    
     forecasts = []
     
-    for well_id in production_df['WellId'].unique():
-        well_data = production_df[production_df['WellId'] == well_id].copy()
+    for well_id in production_df[well_id_col].unique():
+        well_data = production_df[production_df[well_id_col] == well_id].copy()
         well_data = well_data.sort_values('ProducingMonth')
         
         if len(well_data) < 3:
@@ -2764,6 +2793,9 @@ if st.session_state.production_data is not None:
             if st.button("🔬 Calculate Well Performance Metrics", type="primary"):
                 with st.spinner("Calculating comprehensive well performance metrics..."):
                     try:
+                        # Debug information
+                        st.info(f"🔍 Data columns available: {list(st.session_state.processed_data.columns)}")
+                        
                         # Calculate performance metrics
                         performance_metrics = calculate_well_performance_metrics(
                             st.session_state.processed_data, 
@@ -2788,6 +2820,17 @@ if st.session_state.production_data is not None:
                         
                     except Exception as e:
                         st.error(f"❌ Error in performance analysis: {str(e)}")
+                        
+                        # Enhanced debugging
+                        st.error("🔍 **Debug Information:**")
+                        well_id_options = ['WellId', 'API_UWI', 'Well_ID', 'UWI', 'WellID']
+                        found_well_ids = [col for col in well_id_options if col in st.session_state.processed_data.columns]
+                        st.code(f"Found well ID columns: {found_well_ids}")
+                        
+                        if not found_well_ids:
+                            st.error("❌ **Critical Issue:** No well identifier column found!")
+                            st.info("Expected columns: WellId, API_UWI, Well_ID, UWI, or WellID")
+                            st.info("Please ensure your data contains one of these well identifier columns.")
             
             # Display results if available
             if 'performance_metrics' in st.session_state and st.session_state.performance_metrics is not None:
