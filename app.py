@@ -11,12 +11,6 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 import warnings
 warnings.filterwarnings("ignore")
-import os
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import ARRAY
-import json
 
 # Set page config
 st.set_page_config(
