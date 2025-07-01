@@ -857,12 +857,13 @@ if st.session_state.production_data is not None:
                 decline_df = st.session_state.decline_results
                 
                 # Create sub-tabs for different analyses
-                subtab1, subtab2, subtab3, subtab4, subtab5 = st.tabs([
+                subtab1, subtab2, subtab3, subtab4, subtab5, subtab6 = st.tabs([
                     "🏆 Top 20 Wells - 3 Month Forecast", 
                     "📊 EUR Analysis", 
                     "🗺️ Top 10 Wells Map", 
                     "📈 Individual Well Analysis",
-                    "🔍 Model Validation & Accuracy"
+                    "🔍 Model Validation & Accuracy",
+                    "📈 EUR Error Distribution"
                 ])
                 
                 with subtab1:
@@ -1559,6 +1560,153 @@ if st.session_state.production_data is not None:
                             file_name=f"validation_{well_title.replace(' ', '_')}.csv",
                             mime="text/csv"
                         )
+                
+                with subtab6:
+                    st.subheader("📈 EUR Error Distribution Analysis")
+                    
+                    # Calculate relative errors for all wells
+                    error_data = []
+                    for idx, row in decline_df.iterrows():
+                        if pd.notna(row['EUR_BOE']) and pd.notna(row['EUR_Actual']) and row['EUR_Actual'] > 0:
+                            abs_error = abs(row['EUR_BOE'] - row['EUR_Actual'])
+                            rel_error_pct = (abs_error / row['EUR_Actual']) * 100
+                            
+                            well_name = row.get('WellName', row['API_UWI'])
+                            error_data.append({
+                                'WellName': well_name,
+                                'API_UWI': row['API_UWI'],
+                                'EUR_Predicted': row['EUR_BOE'],
+                                'EUR_Actual': row['EUR_Actual'],
+                                'Abs_Error': abs_error,
+                                'Rel_Error(%)': rel_error_pct
+                            })
+                    
+                    if error_data:
+                        error_df = pd.DataFrame(error_data)
+                        
+                        # Drop rows with NaN in Rel_Error(%)
+                        error_df = error_df.dropna(subset=['Rel_Error(%)'])
+                        
+                        # Define error bins and labels
+                        bins = [0, 10, 20, 30, 50, 100, float('inf')]
+                        labels = ['0–10%', '10–20%', '20–30%', '30–50%', '50–100%', '>100%']
+                        
+                        # Bin the relative errors
+                        error_df['ErrorRange'] = pd.cut(error_df['Rel_Error(%)'], bins=bins, labels=labels, right=False)
+                        
+                        # Count number of wells in each error range
+                        error_distribution = error_df['ErrorRange'].value_counts().sort_index()
+                        
+                        # Display results
+                        st.subheader("Relative Error (%) Distribution:")
+                        
+                        # Create two columns for display
+                        col1, col2 = st.columns([1, 1])
+                        
+                        with col1:
+                            st.subheader("📊 Distribution Summary")
+                            
+                            # Display the distribution table
+                            distribution_df = pd.DataFrame({
+                                'Error Range': error_distribution.index,
+                                'Number of Wells': error_distribution.values
+                            })
+                            st.table(distribution_df)
+                            
+                            # Calculate summary statistics
+                            total_wells = len(error_df)
+                            st.metric("Total Wells Analyzed", total_wells)
+                            
+                            # Calculate percentages
+                            st.subheader("📈 Percentage Breakdown")
+                            for error_range, count in error_distribution.items():
+                                percentage = (count / total_wells) * 100
+                                st.metric(f"{error_range} Error", f"{count} wells ({percentage:.1f}%)")
+                        
+                        with col2:
+                            st.subheader("📊 Visual Distribution")
+                            
+                            # Create bar chart
+                            fig_dist = px.bar(
+                                x=error_distribution.index, 
+                                y=error_distribution.values,
+                                title="EUR Prediction Error Distribution",
+                                labels={'x': 'Error Range (%)', 'y': 'Number of Wells'},
+                                color=error_distribution.values,
+                                color_continuous_scale='RdYlBu_r'
+                            )
+                            fig_dist.update_layout(height=400, showlegend=False)
+                            st.plotly_chart(fig_dist, use_container_width=True)
+                            
+                            # Create pie chart
+                            fig_pie = px.pie(
+                                values=error_distribution.values, 
+                                names=error_distribution.index,
+                                title="EUR Error Distribution (Percentage)"
+                            )
+                            fig_pie.update_layout(height=400)
+                            st.plotly_chart(fig_pie, use_container_width=True)
+                        
+                        # Summary insights
+                        st.subheader("🔍 Key Insights")
+                        
+                        # Calculate model performance metrics
+                        high_accuracy = error_distribution.get('0–10%', 0) + error_distribution.get('10–20%', 0)
+                        medium_accuracy = error_distribution.get('20–30%', 0) + error_distribution.get('30–50%', 0)
+                        low_accuracy = error_distribution.get('50–100%', 0) + error_distribution.get('>100%', 0)
+                        
+                        high_pct = (high_accuracy / total_wells) * 100
+                        medium_pct = (medium_accuracy / total_wells) * 100
+                        low_pct = (low_accuracy / total_wells) * 100
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("High Accuracy (≤20%)", f"{high_accuracy} wells", f"{high_pct:.1f}%")
+                        with col2:
+                            st.metric("Medium Accuracy (20-50%)", f"{medium_accuracy} wells", f"{medium_pct:.1f}%")
+                        with col3:
+                            st.metric("Low Accuracy (>50%)", f"{low_accuracy} wells", f"{low_pct:.1f}%")
+                        
+                        # Model quality assessment
+                        if high_pct >= 60:
+                            quality_assessment = "🟢 Excellent model performance"
+                        elif high_pct >= 40:
+                            quality_assessment = "🟡 Good model performance"
+                        else:
+                            quality_assessment = "🔴 Model needs improvement"
+                        
+                        st.info(f"**Overall Assessment:** {quality_assessment}")
+                        
+                        # Export functionality
+                        st.subheader("📥 Export Data")
+                        
+                        # Export error distribution summary
+                        distribution_export = pd.DataFrame({
+                            'ErrorRange': error_distribution.index,
+                            'Count': error_distribution.values,
+                            'Percentage': [(count / total_wells) * 100 for count in error_distribution.values]
+                        })
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            csv_dist = distribution_export.to_csv(index=False)
+                            st.download_button(
+                                label="📊 Download Error Distribution Summary",
+                                data=csv_dist,
+                                file_name="error_distribution_summary.csv",
+                                mime="text/csv"
+                            )
+                        
+                        with col2:
+                            csv_detailed = error_df.to_csv(index=False)
+                            st.download_button(
+                                label="📋 Download Detailed Error Analysis",
+                                data=csv_detailed,
+                                file_name="well_eur_error_analysis.csv",
+                                mime="text/csv"
+                            )
+                    else:
+                        st.warning("Unable to calculate error distribution - missing EUR actual or predicted values")
             else:
                 st.info("🔬 Click 'Run Decline Curve Analysis' to start analyzing well performance and EUR predictions")
 
